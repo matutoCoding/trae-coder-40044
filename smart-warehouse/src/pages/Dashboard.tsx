@@ -23,7 +23,8 @@ export default function Dashboard() {
 
   const recentInbounds = state.inboundOrders.slice(0, 5)
   const recentOutbounds = state.outboundOrders.slice(0, 5)
-  const activeAlerts = state.alerts.filter(a => a.status === 'active').slice(0, 5)
+  const allActiveAlerts = state.alerts.filter(a => a.status === 'active')
+  const activeAlerts = allActiveAlerts.slice(0, 5)
 
   const occupancyRate = useMemo(() =>
     Math.round((state.locations.filter(l => l.status === 'occupied' || l.status === 'reserved').length / state.locations.length) * 100),
@@ -72,8 +73,8 @@ export default function Dashboard() {
     { title: '今日入库', value: state.inboundOrders.filter(o => o.status !== 'completed').length + state.inboundOrders.filter(o => o.status === 'completed').length, unit: '单', icon: Package, color: 'from-blue-500 to-blue-600', trend: '+12%', trendUp: true },
     { title: '今日出库', value: state.outboundOrders.length, unit: '单', icon: Truck, color: 'from-green-500 to-green-600', trend: '+8%', trendUp: true },
     { title: '在库托盘', value: state.pallets.filter(p => p.status === 'stored').length, unit: '个', icon: Package, color: 'from-purple-500 to-purple-600', trend: '+3%', trendUp: true },
-    { title: '预警数量', value: activeAlerts.length, unit: '条', icon: AlertTriangle, color: 'from-orange-500 to-orange-600', trend: '-5%', trendUp: false },
-  ], [state.inboundOrders, state.outboundOrders, state.pallets, activeAlerts.length])
+    { title: '预警数量', value: allActiveAlerts.length, unit: '条', icon: AlertTriangle, color: 'from-orange-500 to-orange-600', trend: '-5%', trendUp: false },
+  ], [state.inboundOrders, state.outboundOrders, state.pallets, allActiveAlerts.length])
 
   return (
     <div className="space-y-6">

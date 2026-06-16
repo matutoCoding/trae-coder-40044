@@ -1,4 +1,4 @@
-import { createContext, useContext, useReducer, type ReactNode } from 'react'
+import { createContext, useContext, useReducer, useEffect, type ReactNode } from 'react'
 import type {
   InboundOrder, OutboundOrder, PickingWave, StackerTask, AGVTask,
   Stacker, AGV, Location, Pallet, TaskLog, InventoryRecord, StockAlert
@@ -8,6 +8,8 @@ import {
   mockStackerTasks, mockAGVTasks, mockStackers, mockAGVs,
   mockLocations, mockPallets, mockStockAlerts, mockMaterials, mockInventoryRecords
 } from '@/data/mockData'
+
+const STORAGE_KEY = 'smart-warehouse-state'
 
 interface WarehouseState {
   inboundOrders: InboundOrder[]
@@ -127,6 +129,22 @@ function computeDynamicAlerts(state: Omit<WarehouseState, 'alerts'>): StockAlert
   return [...alerts, ...mockStockAlerts]
 }
 
+function mergeAlerts(newAlerts: StockAlert[], existingAlerts: StockAlert[]): StockAlert[] {
+  const statusMap = new Map<string, StockAlert['status']>()
+  existingAlerts.forEach(a => {
+    if (a.status !== 'active') {
+      statusMap.set(a.id, a.status)
+    }
+  })
+  return newAlerts.map(alert => {
+    const preservedStatus = statusMap.get(alert.id)
+    if (preservedStatus) {
+      return { ...alert, status: preservedStatus }
+    }
+    return alert
+  })
+}
+
 const initialStateWithoutAlerts: Omit<WarehouseState, 'alerts'> = {
   inboundOrders: [...mockInboundOrders],
   outboundOrders: [...mockOutboundOrders],
@@ -155,14 +173,14 @@ function warehouseReducer(state: WarehouseState, action: Action): WarehouseState
           o.id === action.payload.id ? { ...o, ...action.payload } : o
         ),
       }
-      return { ...newState, alerts: computeDynamicAlerts(newState) }
+      return { ...newState, alerts: mergeAlerts(computeDynamicAlerts(newState), state.alerts) }
     }
     case 'ADD_INBOUND_ORDER': {
       const newState = {
         ...state,
         inboundOrders: [action.payload, ...state.inboundOrders],
       }
-      return { ...newState, alerts: computeDynamicAlerts(newState) }
+      return { ...newState, alerts: mergeAlerts(computeDynamicAlerts(newState), state.alerts) }
     }
     case 'UPDATE_OUTBOUND_ORDER': {
       const newState = {
@@ -171,14 +189,14 @@ function warehouseReducer(state: WarehouseState, action: Action): WarehouseState
           o.id === action.payload.id ? { ...o, ...action.payload } : o
         ),
       }
-      return { ...newState, alerts: computeDynamicAlerts(newState) }
+      return { ...newState, alerts: mergeAlerts(computeDynamicAlerts(newState), state.alerts) }
     }
     case 'ADD_OUTBOUND_ORDER': {
       const newState = {
         ...state,
         outboundOrders: [action.payload, ...state.outboundOrders],
       }
-      return { ...newState, alerts: computeDynamicAlerts(newState) }
+      return { ...newState, alerts: mergeAlerts(computeDynamicAlerts(newState), state.alerts) }
     }
     case 'UPDATE_PICKING_WAVE':
       return {
@@ -252,7 +270,7 @@ function warehouseReducer(state: WarehouseState, action: Action): WarehouseState
           l.id === action.payload.id ? { ...l, ...action.payload } : l
         ),
       }
-      return { ...newState, alerts: computeDynamicAlerts(newState) }
+      return { ...newState, alerts: mergeAlerts(computeDynamicAlerts(newState), state.alerts) }
     }
     case 'UPDATE_PALLET': {
       const newState = {
@@ -261,14 +279,14 @@ function warehouseReducer(state: WarehouseState, action: Action): WarehouseState
           p.id === action.payload.id ? { ...p, ...action.payload } : p
         ),
       }
-      return { ...newState, alerts: computeDynamicAlerts(newState) }
+      return { ...newState, alerts: mergeAlerts(computeDynamicAlerts(newState), state.alerts) }
     }
     case 'ADD_PALLET': {
       const newState = {
         ...state,
         pallets: [action.payload, ...state.pallets],
       }
-      return { ...newState, alerts: computeDynamicAlerts(newState) }
+      return { ...newState, alerts: mergeAlerts(computeDynamicAlerts(newState), state.alerts) }
     }
     case 'BATCH_UPDATE_OUTBOUND_WAVE': {
       const ordersToUpdate = state.outboundOrders
@@ -283,7 +301,7 @@ function warehouseReducer(state: WarehouseState, action: Action): WarehouseState
           ordersToUpdate.includes(o.id) ? { ...o, status: action.orderStatus } : o
         ),
       }
-      return { ...newState, alerts: computeDynamicAlerts(newState) }
+      return { ...newState, alerts: mergeAlerts(computeDynamicAlerts(newState), state.alerts) }
     }
     case 'ADD_TASK_LOG':
       return {
@@ -325,7 +343,29 @@ interface WarehouseContextType {
 const WarehouseContext = createContext<WarehouseContextType | null>(null)
 
 export function WarehouseProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(warehouseReducer, initialState)
+  const [state, dispatch] = useReducer(warehouseReducer, initialState, (initState) => {
+    if (typeof window === 'undefined') return initState
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY)
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        return parsed
+      }
+    } catch {
+      // ignore
+    }
+    return initState
+  })
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+    } catch {
+      // ignore
+    }
+  }, [state])
+
   return (
     <WarehouseContext.Provider value={{ state, dispatch }}>
       {children}

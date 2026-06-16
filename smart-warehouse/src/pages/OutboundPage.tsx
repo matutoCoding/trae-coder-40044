@@ -51,6 +51,14 @@ export default function OutboundPage() {
     let matchedPallet: Pallet | undefined
 
     matchedOrder = state.outboundOrders.find(o => o.code.toUpperCase() === trimmed.toUpperCase())
+    if (matchedOrder?.status === 'completed') {
+      setReviewResult({
+        order: matchedOrder,
+        error: '该出库单已完成，无需重复复核',
+        alreadyCompleted: true,
+      })
+      return
+    }
     if (!matchedOrder) {
       matchedPallet = state.pallets.find(p => p.code.toUpperCase() === trimmed.toUpperCase())
       if (matchedPallet) {
@@ -87,6 +95,7 @@ export default function OutboundPage() {
   const handleConfirmOutbound = () => {
     if (!reviewResult?.order) return
     const order = reviewResult.order
+    if (order.status === 'completed') return
     const beforeQty = getMaterialStock(state, order.materialId)
     const afterQty = Math.max(0, beforeQty - (reviewResult.actualQty || order.quantity))
 
@@ -722,7 +731,7 @@ export default function OutboundPage() {
                   </div>
                 </div>
 
-                {reviewResult && !reviewResult.confirmed && (
+                {reviewResult && !reviewResult.confirmed && !reviewResult.alreadyCompleted && (
                   <div className={`p-5 rounded-xl border ${
                     reviewResult.error
                       ? 'bg-red-50 border-red-200'
@@ -817,6 +826,44 @@ export default function OutboundPage() {
                         </div>
                       </div>
                     )}
+                  </div>
+                )}
+
+                {reviewResult?.alreadyCompleted && (
+                  <div className="p-5 rounded-xl border bg-blue-50 border-blue-200">
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center">
+                        <CheckCircle2 className="w-6 h-6 text-blue-600" />
+                      </div>
+                      <div>
+                        <h4 className="font-semibold text-gray-800">该出库单已完成</h4>
+                        <p className="text-sm text-gray-500">订单 {reviewResult.order.code} 已完成出库，无需重复操作</p>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 text-sm mb-4">
+                      <div className="p-2 bg-white/60 rounded">
+                        <span className="text-xs text-gray-500">物料</span>
+                        <p className="font-medium text-gray-800 mt-0.5">{reviewResult.order.materialName}</p>
+                      </div>
+                      <div className="p-2 bg-white/60 rounded">
+                        <span className="text-xs text-gray-500">数量</span>
+                        <p className="font-medium text-gray-800 mt-0.5">{reviewResult.order.quantity}</p>
+                      </div>
+                      <div className="p-2 bg-white/60 rounded">
+                        <span className="text-xs text-gray-500">客户</span>
+                        <p className="font-medium text-gray-800 mt-0.5">{reviewResult.order.customer}</p>
+                      </div>
+                      <div className="p-2 bg-white/60 rounded">
+                        <span className="text-xs text-gray-500">状态</span>
+                        <p className="font-medium text-green-600 mt-0.5">已完成</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => { setReviewResult(null); setReviewCode(''); }}
+                      className="w-full py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                    >
+                      继续复核下一单
+                    </button>
                   </div>
                 )}
 
