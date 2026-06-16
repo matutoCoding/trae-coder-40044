@@ -146,3 +146,35 @@ export interface AGVTask {
   createTime: string
   estimatedTime: number
 }
+
+export interface TaskLog {
+  id: string
+  taskId: string
+  taskType: 'stacker' | 'agv'
+  action: 'execute' | 'dispatch' | 'pause' | 'cancel' | 'complete'
+  operator: string
+  timestamp: string
+  deviceId: string
+  deviceCode: string
+  palletCode?: string
+  fromLocation?: string
+  toLocation?: string
+  result: string
+  remark?: string
+}
+
+export interface InventoryRecord {
+  id: string
+  type: 'inbound' | 'outbound' | 'transfer' | 'adjust' | 'check'
+  materialId: string
+  materialName: string
+  quantity: number
+  beforeQty: number
+  afterQty: number
+  palletCode?: string
+  locationCode?: string
+  orderCode?: string
+  operator: string
+  timestamp: string
+  remark?: string
+}

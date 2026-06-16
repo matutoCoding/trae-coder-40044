@@ -1,23 +1,29 @@
 import { useState, useMemo } from 'react'
 import {
   Bot, Play, Pause, AlertTriangle, CheckCircle2,
-  Search, ArrowRightLeft, Package, Truck, FileText, RefreshCw
+  Search, ArrowRightLeft, Package, Truck, FileText, RefreshCw,
+  ListTodo, X, Clock, User
 } from 'lucide-react'
-import { useWarehouse } from '@/context/WarehouseContext'
+import { useWarehouse, generateId, getNowTime } from '@/context/WarehouseContext'
 import { mockLocations } from '@/data/mockData'
 import { statusColors, statusLabels } from '@/utils'
+import type { StackerTask, TaskLog } from '@/types'
 
-type TabType = 'overview' | 'tasks' | 'control'
+type TabType = 'overview' | 'tasks' | 'taskLogs' | 'control'
 
 export default function StackerPage() {
   const { state, dispatch } = useWarehouse()
   const [tab, setTab] = useState<TabType>('overview')
   const [selectedStacker, setSelectedStacker] = useState<string | null>(null)
+  const [selectedTask, setSelectedTask] = useState<StackerTask | null>(null)
+  const [showDetailModal, setShowDetailModal] = useState(false)
 
   const stats = useMemo(() => ({
     total: state.stackers.length,
     running: state.stackers.filter(s => s.status === 'running').length,
     pendingTasks: state.stackerTasks.filter(t => t.status === 'pending').length,
+    executingTasks: state.stackerTasks.filter(t => t.status === 'executing').length,
+    completedTasks: state.stackerTasks.filter(t => t.status === 'completed').length,
     fault: state.stackers.filter(s => s.status === 'fault').length,
   }), [state.stackers, state.stackerTasks])
 
@@ -26,21 +32,64 @@ export default function StackerPage() {
     [state.stackerTasks]
   )
 
+  const stackerTaskLogs = useMemo(
+    () => state.taskLogs
+      .filter(log => log.taskType === 'stacker')
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
+    [state.taskLogs]
+  )
+
+  const addTaskLog = (
+    taskId: string,
+    action: TaskLog['action'],
+    task: StackerTask,
+    result: string
+  ) => {
+    const stacker = state.stackers.find(s => s.id === task.stackerId)
+    dispatch({
+      type: 'ADD_TASK_LOG',
+      payload: {
+        id: generateId('LOG'),
+        taskId,
+        taskType: 'stacker',
+        action,
+        operator: '系统操作员',
+        timestamp: getNowTime(),
+        deviceId: task.stackerId,
+        deviceCode: stacker?.code || '',
+        palletCode: task.palletCode,
+        fromLocation: task.fromLocation,
+        toLocation: task.toLocation,
+        result,
+      }
+    })
+  }
+
   const handleExecuteTask = (taskId: string) => {
     const task = state.stackerTasks.find(t => t.id === taskId)
     if (!task) return
-    dispatch({ type: 'UPDATE_STACKER_TASK', payload: { id: taskId, status: 'executing', startTime: new Date().toISOString().slice(0, 16).replace('T', ' ') } })
+    dispatch({ type: 'UPDATE_STACKER_TASK', payload: { id: taskId, status: 'executing', startTime: getNowTime() } })
     dispatch({ type: 'UPDATE_STACKER', payload: { id: task.stackerId, status: 'running', currentTask: task.code } })
+    addTaskLog(taskId, 'execute', task, '任务已开始执行')
+  }
+
+  const handleDispatchTask = (taskId: string) => {
+    const task = state.stackerTasks.find(t => t.id === taskId)
+    if (!task) return
+    dispatch({ type: 'UPDATE_STACKER_TASK', payload: { id: taskId, status: 'executing', startTime: getNowTime() } })
+    dispatch({ type: 'UPDATE_STACKER', payload: { id: task.stackerId, status: 'running', currentTask: task.code } })
+    addTaskLog(taskId, 'dispatch', task, '任务已调度执行')
   }
 
   const handleCancelTask = (taskId: string) => {
     const task = state.stackerTasks.find(t => t.id === taskId)
     if (!task) return
-    dispatch({ type: 'UPDATE_STACKER_TASK', payload: { id: taskId, status: 'failed', endTime: new Date().toISOString().slice(0, 16).replace('T', ' ') } })
+    dispatch({ type: 'UPDATE_STACKER_TASK', payload: { id: taskId, status: 'failed', endTime: getNowTime() } })
     const stillExecuting = state.stackerTasks.some(t => t.stackerId === task.stackerId && t.status === 'executing' && t.id !== taskId)
     if (!stillExecuting) {
       dispatch({ type: 'UPDATE_STACKER', payload: { id: task.stackerId, status: 'idle', currentTask: undefined } })
     }
+    addTaskLog(taskId, 'cancel', task, '任务已取消')
   }
 
   const handlePauseTask = (taskId: string) => {
@@ -51,12 +100,13 @@ export default function StackerPage() {
     if (!stillExecuting) {
       dispatch({ type: 'UPDATE_STACKER', payload: { id: task.stackerId, status: 'idle' } })
     }
+    addTaskLog(taskId, 'pause', task, '任务已暂停')
   }
 
   const handleCompleteTask = (taskId: string) => {
     const task = state.stackerTasks.find(t => t.id === taskId)
     if (!task) return
-    dispatch({ type: 'UPDATE_STACKER_TASK', payload: { id: taskId, status: 'completed', endTime: new Date().toISOString().slice(0, 16).replace('T', ' ') } })
+    dispatch({ type: 'UPDATE_STACKER_TASK', payload: { id: taskId, status: 'completed', endTime: getNowTime() } })
     const stillExecuting = state.stackerTasks.some(t => t.stackerId === task.stackerId && t.status === 'executing' && t.id !== taskId)
     const stacker = state.stackers.find(s => s.id === task.stackerId)
     dispatch({
@@ -68,11 +118,23 @@ export default function StackerPage() {
         completedTasks: (stacker?.completedTasks || 0) + 1
       }
     })
+    addTaskLog(taskId, 'complete', task, '任务已完成')
+  }
+
+  const handleViewDetail = (task: StackerTask) => {
+    setSelectedTask(task)
+    setShowDetailModal(true)
+  }
+
+  const getTaskLogs = (taskId: string) => {
+    return state.taskLogs
+      .filter(log => log.taskId === taskId)
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
   }
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
         <div className="bg-white rounded-xl shadow-card p-5">
           <div className="flex items-center justify-between">
             <div>
@@ -98,11 +160,33 @@ export default function StackerPage() {
         <div className="bg-white rounded-xl shadow-card p-5">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-gray-500">待执行任务</p>
+              <p className="text-sm text-gray-500">待执行</p>
               <p className="text-2xl font-bold text-amber-600 mt-1">{stats.pendingTasks}</p>
             </div>
             <div className="w-12 h-12 bg-amber-100 rounded-xl flex items-center justify-center">
-              <FileText className="w-6 h-6 text-amber-600" />
+              <Clock className="w-6 h-6 text-amber-600" />
+            </div>
+          </div>
+        </div>
+        <div className="bg-white rounded-xl shadow-card p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-gray-500">执行中</p>
+              <p className="text-2xl font-bold text-blue-600 mt-1">{stats.executingTasks}</p>
+            </div>
+            <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center">
+              <RefreshCw className="w-6 h-6 text-blue-600" />
+            </div>
+          </div>
+        </div>
+        <div className="bg-white rounded-xl shadow-card p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-gray-500">已完成</p>
+              <p className="text-2xl font-bold text-green-600 mt-1">{stats.completedTasks}</p>
+            </div>
+            <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
+              <CheckCircle2 className="w-6 h-6 text-green-600" />
             </div>
           </div>
         </div>
@@ -125,6 +209,7 @@ export default function StackerPage() {
             {[
               { id: 'overview', label: '设备总览', icon: Bot },
               { id: 'tasks', label: '任务调度', icon: FileText },
+              { id: 'taskLogs', label: '任务日志', icon: ListTodo },
               { id: 'control', label: '手动控制', icon: ArrowRightLeft },
             ].map((t) => {
               const Icon = t.icon
@@ -434,22 +519,96 @@ export default function StackerPage() {
                             {task.status === 'pending' && (
                               <>
                                 <button onClick={() => handleExecuteTask(task.id)} className="text-xs px-2 py-1 text-green-600 bg-green-50 rounded hover:bg-green-100">执行</button>
+                                <button onClick={() => handleDispatchTask(task.id)} className="text-xs px-2 py-1 text-blue-600 bg-blue-50 rounded hover:bg-blue-100">调度</button>
                                 <button onClick={() => handleCancelTask(task.id)} className="text-xs px-2 py-1 text-red-600 bg-red-50 rounded hover:bg-red-100">取消</button>
                               </>
                             )}
                             {task.status === 'executing' && (
                               <>
-                                <button onClick={() => handlePauseTask(task.id)} className="text-xs px-2 py-1 text-amber-600 bg-amber-50 rounded hover:bg-amber-100">暂停</button>
-                                <button onClick={() => handleCompleteTask(task.id)} className="text-xs px-2 py-1 text-green-600 bg-green-50 rounded hover:bg-green-100">完成</button>
+                                <button onClick={() => handlePauseTask(task.id)} className="text-xs px-2 py-1 text-amber-600 bg-amber-50 rounded hover:bg-amber-100 flex items-center gap-1">
+                                  <Pause className="w-3 h-3" />暂停
+                                </button>
+                                <button onClick={() => handleCompleteTask(task.id)} className="text-xs px-2 py-1 text-green-600 bg-green-50 rounded hover:bg-green-100 flex items-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3" />完成
+                                </button>
                               </>
                             )}
-                            <button className="text-xs px-2 py-1 text-gray-600 hover:bg-gray-100 rounded">详情</button>
+                            <button onClick={() => handleViewDetail(task)} className="text-xs px-2 py-1 text-gray-600 hover:bg-gray-100 rounded">详情</button>
                           </div>
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          )}
+
+          {tab === 'taskLogs' && (
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <h4 className="font-semibold text-gray-800">任务日志</h4>
+                <div className="text-sm text-gray-500">共 {stackerTaskLogs.length} 条记录</div>
+              </div>
+              <div className="relative">
+                <div className="absolute left-4 top-0 bottom-0 w-0.5 bg-gray-200"></div>
+                <div className="space-y-4">
+                  {stackerTaskLogs.map((log) => (
+                    <div key={log.id} className="relative pl-10">
+                      <div className={`absolute left-2 top-1 w-4 h-4 rounded-full border-2 border-white ${
+                        log.action === 'execute' ? 'bg-green-500' :
+                        log.action === 'dispatch' ? 'bg-blue-500' :
+                        log.action === 'pause' ? 'bg-amber-500' :
+                        log.action === 'cancel' ? 'bg-red-500' :
+                        'bg-green-500'
+                      }`}></div>
+                      <div className="bg-gray-50 rounded-xl p-4 border border-gray-100">
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${statusColors[log.action]}`}>
+                              {statusLabels[log.action]}
+                            </span>
+                            <span className="text-sm font-medium text-gray-800">{log.deviceCode}</span>
+                          </div>
+                          <div className="flex items-center gap-1 text-xs text-gray-500">
+                            <Clock className="w-3 h-3" />
+                            {log.timestamp}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                          <div>
+                            <span className="text-gray-500">操作人</span>
+                            <div className="flex items-center gap-1 mt-1 text-gray-700">
+                              <User className="w-3 h-3" />
+                              {log.operator}
+                            </div>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">托盘号</span>
+                            <div className="mt-1 font-mono text-gray-700">{log.palletCode || '-'}</div>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">起点</span>
+                            <div className="mt-1 font-mono text-gray-700">{log.fromLocation || '-'}</div>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">终点</span>
+                            <div className="mt-1 font-mono text-gray-700">{log.toLocation || '-'}</div>
+                          </div>
+                        </div>
+                        <div className="mt-3 pt-3 border-t border-gray-200">
+                          <span className="text-xs text-gray-500">处理结果：</span>
+                          <span className="text-xs text-gray-700">{log.result}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {stackerTaskLogs.length === 0 && (
+                    <div className="py-12 text-center text-gray-400 text-sm">
+                      暂无任务日志
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -610,6 +769,161 @@ export default function StackerPage() {
           )}
         </div>
       </div>
+
+      {showDetailModal && selectedTask && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[80vh] overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <h3 className="text-lg font-semibold text-gray-800">任务详情</h3>
+              <button
+                onClick={() => setShowDetailModal(false)}
+                className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+            <div className="p-6 overflow-y-auto max-h-[calc(80vh-130px)]">
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-sm text-gray-500">任务编号</label>
+                    <p className="mt-1 font-medium text-gray-800">{selectedTask.code}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-500">任务类型</label>
+                    <p className="mt-1">
+                      <span className={`text-xs px-2 py-1 rounded-full ${statusColors[selectedTask.type]}`}>
+                        {statusLabels[selectedTask.type]}
+                      </span>
+                    </p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-500">执行设备</label>
+                    <p className="mt-1 font-medium text-gray-800">
+                      {state.stackers.find(s => s.id === selectedTask.stackerId)?.code}
+                    </p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-500">托盘号</label>
+                    <p className="mt-1 font-mono text-gray-800">{selectedTask.palletCode}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-500">起始位置</label>
+                    <p className="mt-1 font-mono text-gray-800">{selectedTask.fromLocation || '入库站台'}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-500">目标位置</label>
+                    <p className="mt-1 font-mono text-gray-800">{selectedTask.toLocation || '出库站台'}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-500">创建时间</label>
+                    <p className="mt-1 text-gray-800">{selectedTask.createTime}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-500">状态</label>
+                    <p className="mt-1">
+                      <span className={`text-xs px-2 py-1 rounded-full ${statusColors[selectedTask.status]}`}>
+                        {statusLabels[selectedTask.status]}
+                      </span>
+                    </p>
+                  </div>
+                  {selectedTask.startTime && (
+                    <div>
+                      <label className="text-sm text-gray-500">开始时间</label>
+                      <p className="mt-1 text-gray-800">{selectedTask.startTime}</p>
+                    </div>
+                  )}
+                  {selectedTask.endTime && (
+                    <div>
+                      <label className="text-sm text-gray-500">结束时间</label>
+                      <p className="mt-1 text-gray-800">{selectedTask.endTime}</p>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <h4 className="text-sm font-medium text-gray-800 mb-3">操作日志</h4>
+                  <div className="relative">
+                    <div className="absolute left-3 top-0 bottom-0 w-0.5 bg-gray-200"></div>
+                    <div className="space-y-3">
+                      {getTaskLogs(selectedTask.id).map((log) => (
+                        <div key={log.id} className="relative pl-8">
+                          <div className={`absolute left-1 top-1 w-4 h-4 rounded-full border-2 border-white ${
+                            log.action === 'execute' ? 'bg-green-500' :
+                            log.action === 'dispatch' ? 'bg-blue-500' :
+                            log.action === 'pause' ? 'bg-amber-500' :
+                            log.action === 'cancel' ? 'bg-red-500' :
+                            'bg-green-500'
+                          }`}></div>
+                          <div className="bg-gray-50 rounded-lg p-3 text-sm">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className={`text-xs px-2 py-0.5 rounded-full ${statusColors[log.action]}`}>
+                                {statusLabels[log.action]}
+                              </span>
+                              <span className="text-xs text-gray-500">{log.timestamp}</span>
+                            </div>
+                            <div className="text-xs text-gray-600">
+                              <span className="text-gray-500">操作人：</span>{log.operator}
+                            </div>
+                            <div className="text-xs text-gray-600 mt-1">
+                              <span className="text-gray-500">处理结果：</span>{log.result}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      {getTaskLogs(selectedTask.id).length === 0 && (
+                        <div className="text-center text-gray-400 text-sm py-4">
+                          暂无操作日志
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-3">
+              <button
+                onClick={() => setShowDetailModal(false)}
+                className="px-4 py-2 text-sm text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50"
+              >
+                关闭
+              </button>
+              {selectedTask.status === 'pending' && (
+                <>
+                  <button
+                    onClick={() => { handleExecuteTask(selectedTask.id); setShowDetailModal(false); }}
+                    className="px-4 py-2 text-sm text-white bg-green-600 rounded-lg hover:bg-green-700"
+                  >
+                    执行
+                  </button>
+                  <button
+                    onClick={() => { handleDispatchTask(selectedTask.id); setShowDetailModal(false); }}
+                    className="px-4 py-2 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                  >
+                    调度
+                  </button>
+                </>
+              )}
+              {selectedTask.status === 'executing' && (
+                <>
+                  <button
+                    onClick={() => { handlePauseTask(selectedTask.id); setShowDetailModal(false); }}
+                    className="px-4 py-2 text-sm text-white bg-amber-600 rounded-lg hover:bg-amber-700"
+                  >
+                    暂停
+                  </button>
+                  <button
+                    onClick={() => { handleCompleteTask(selectedTask.id); setShowDetailModal(false); }}
+                    className="px-4 py-2 text-sm text-white bg-green-600 rounded-lg hover:bg-green-700"
+                  >
+                    完成
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

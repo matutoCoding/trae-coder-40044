@@ -7,6 +7,7 @@ import OutboundPage from '@/pages/OutboundPage'
 import StockCheckPage from '@/pages/StockCheckPage'
 import AGVPage from '@/pages/AGVPage'
 import AlertPage from '@/pages/AlertPage'
+import InventoryPage from '@/pages/InventoryPage'
 
 export default function App() {
   return (
@@ -20,6 +21,7 @@ export default function App() {
           <Route path="stockcheck" element={<StockCheckPage />} />
           <Route path="agv" element={<AGVPage />} />
           <Route path="alert" element={<AlertPage />} />
+          <Route path="inventory" element={<InventoryPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

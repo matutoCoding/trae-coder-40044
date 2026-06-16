@@ -1,14 +1,23 @@
 import { useState, useMemo } from 'react'
 import {
   Truck, Search, Plus, CheckCircle2, Clock, AlertCircle,
-  FileText, QrCode, ListTodo, ShieldCheck, ArrowRight, RefreshCw
+  FileText, QrCode, ListTodo, ShieldCheck, ArrowRight, RefreshCw,
+  X, ChevronDown, ChevronUp
 } from 'lucide-react'
-import { useWarehouse } from '@/context/WarehouseContext'
+import { useWarehouse, generateId, getNowTime, getMaterialStock } from '@/context/WarehouseContext'
 import { mockMaterials } from '@/data/mockData'
 import { statusColors, statusLabels } from '@/utils'
 import type { Pallet, OutboundOrder } from '@/types'
 
 type TabType = 'orders' | 'waves' | 'picking' | 'review'
+
+interface NewOrderForm {
+  materialId: string
+  materialName: string
+  quantity: number
+  customer: string
+  priority: 'normal' | 'urgent' | 'vip'
+}
 
 export default function OutboundPage() {
   const { state, dispatch } = useWarehouse()
@@ -17,10 +26,22 @@ export default function OutboundPage() {
   const [reviewCode, setReviewCode] = useState('')
   const [reviewResult, setReviewResult] = useState<any>(null)
   const [fifoMaterialId, setFifoMaterialId] = useState<string>('all')
+  const [showNewForm, setShowNewForm] = useState(false)
+  const [newOrder, setNewOrder] = useState<NewOrderForm>({
+    materialId: '',
+    materialName: '',
+    quantity: 0,
+    customer: '',
+    priority: 'normal'
+  })
 
   const pickingOrders = state.outboundOrders.filter(o => o.status === 'picking').length
   const reviewingOrders = state.outboundOrders.filter(o => o.status === 'reviewing').length
   const urgentOrders = state.outboundOrders.filter(o => o.priority === 'urgent' && o.status !== 'completed').length
+
+  const getWaveOrders = (waveId: string) => {
+    return state.outboundOrders.filter(o => o.waveId === waveId)
+  }
 
   const handleReview = () => {
     const trimmed = reviewCode.trim()
@@ -65,9 +86,31 @@ export default function OutboundPage() {
 
   const handleConfirmOutbound = () => {
     if (!reviewResult?.order) return
+    const order = reviewResult.order
+    const beforeQty = getMaterialStock(state, order.materialId)
+    const afterQty = Math.max(0, beforeQty - (reviewResult.actualQty || order.quantity))
+
+    dispatch({
+      type: 'ADD_INVENTORY_RECORD',
+      payload: {
+        id: generateId('IR'),
+        type: 'outbound',
+        materialId: order.materialId,
+        materialName: order.materialName,
+        quantity: reviewResult.actualQty || order.quantity,
+        beforeQty,
+        afterQty,
+        palletCode: reviewResult.pallet?.code,
+        orderCode: order.code,
+        operator: order.operator || 'currentUser',
+        timestamp: getNowTime(),
+        remark: '出库确认'
+      }
+    })
+
     dispatch({
       type: 'UPDATE_OUTBOUND_ORDER',
-      payload: { id: reviewResult.order.id, status: 'completed' }
+      payload: { id: order.id, status: 'completed' }
     })
     if (reviewResult.pallet) {
       dispatch({
@@ -85,6 +128,7 @@ export default function OutboundPage() {
       waveStatus: 'processing',
       orderStatus: 'picking'
     })
+    setTab('picking')
   }
 
   const handleStartPicking = (orderId: string) => {
@@ -92,7 +136,71 @@ export default function OutboundPage() {
   }
 
   const handleFinishPicking = (orderId: string) => {
+    const order = state.outboundOrders.find(o => o.id === orderId)
+    if (!order) return
+
+    const beforeQty = getMaterialStock(state, order.materialId)
+    const afterQty = Math.max(0, beforeQty - order.quantity)
+
+    dispatch({
+      type: 'ADD_INVENTORY_RECORD',
+      payload: {
+        id: generateId('IR'),
+        type: 'outbound',
+        materialId: order.materialId,
+        materialName: order.materialName,
+        quantity: order.quantity,
+        beforeQty,
+        afterQty,
+        palletCode: order.palletCodes?.[0],
+        orderCode: order.code,
+        operator: order.operator || 'currentUser',
+        timestamp: getNowTime(),
+        remark: '拣选完成'
+      }
+    })
+
     dispatch({ type: 'UPDATE_OUTBOUND_ORDER', payload: { id: orderId, status: 'reviewing' } })
+  }
+
+  const handleMaterialSelect = (materialId: string) => {
+    const material = mockMaterials.find(m => m.id === materialId)
+    setNewOrder({
+      ...newOrder,
+      materialId,
+      materialName: material?.name || ''
+    })
+  }
+
+  const handleSubmitNewOrder = () => {
+    if (!newOrder.materialId || !newOrder.quantity || !newOrder.customer) {
+      alert('请填写完整信息')
+      return
+    }
+
+    const order: OutboundOrder = {
+      id: generateId('OO'),
+      code: 'OUT' + Date.now().toString().slice(-8),
+      materialId: newOrder.materialId,
+      materialName: newOrder.materialName,
+      quantity: newOrder.quantity,
+      customer: newOrder.customer,
+      priority: newOrder.priority,
+      status: 'pending',
+      createTime: getNowTime(),
+      operator: 'currentUser'
+    }
+
+    dispatch({ type: 'ADD_OUTBOUND_ORDER', payload: order })
+
+    setNewOrder({
+      materialId: '',
+      materialName: '',
+      quantity: 0,
+      customer: '',
+      priority: 'normal'
+    })
+    setShowNewForm(false)
   }
 
   const fifoPallets = useMemo(() => {
@@ -210,7 +318,10 @@ export default function OutboundPage() {
                   <option>紧急</option>
                   <option>VIP</option>
                 </select>
-                <button className="flex items-center gap-1 px-4 py-2 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700">
+                <button
+                  onClick={() => setShowNewForm(!showNewForm)}
+                  className="flex items-center gap-1 px-4 py-2 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                >
                   <Plus className="w-4 h-4" />
                   新建出库单
                 </button>
@@ -219,6 +330,81 @@ export default function OutboundPage() {
                   刷新
                 </button>
               </div>
+
+              {showNewForm && (
+                <div className="mb-6 p-5 bg-blue-50 border border-blue-100 rounded-xl">
+                  <div className="flex items-center justify-between mb-4">
+                    <h5 className="font-semibold text-blue-800">新建出库单</h5>
+                    <button
+                      onClick={() => setShowNewForm(false)}
+                      className="text-gray-400 hover:text-gray-600"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">物料</label>
+                      <select
+                        value={newOrder.materialId}
+                        onChange={(e) => handleMaterialSelect(e.target.value)}
+                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="">请选择物料</option>
+                        {materialOptions.map(m => (
+                          <option key={m.id} value={m.id}>{m.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">数量</label>
+                      <input
+                        type="number"
+                        value={newOrder.quantity || ''}
+                        onChange={(e) => setNewOrder({ ...newOrder, quantity: parseInt(e.target.value) || 0 })}
+                        placeholder="请输入数量"
+                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">客户</label>
+                      <input
+                        type="text"
+                        value={newOrder.customer}
+                        onChange={(e) => setNewOrder({ ...newOrder, customer: e.target.value })}
+                        placeholder="请输入客户名称"
+                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">优先级</label>
+                      <select
+                        value={newOrder.priority}
+                        onChange={(e) => setNewOrder({ ...newOrder, priority: e.target.value as 'normal' | 'urgent' | 'vip' })}
+                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="normal">普通</option>
+                        <option value="urgent">紧急</option>
+                        <option value="vip">VIP</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="mt-4 flex justify-end gap-3">
+                    <button
+                      onClick={() => setShowNewForm(false)}
+                      className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"
+                    >
+                      取消
+                    </button>
+                    <button
+                      onClick={handleSubmitNewOrder}
+                      className="px-4 py-2 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                    >
+                      提交
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="overflow-x-auto">
                 <table className="w-full">
@@ -293,52 +479,92 @@ export default function OutboundPage() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {state.pickingWaves.map((wave) => (
-                  <div
-                    key={wave.id}
-                    onClick={() => setSelectedWave(wave.id)}
-                    className={`p-5 border rounded-xl cursor-pointer transition-all ${
-                      selectedWave === wave.id
-                        ? 'border-blue-500 bg-blue-50'
-                        : 'border-gray-200 hover:border-gray-300 hover:shadow-card'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-3">
-                      <div>
-                        <h5 className="font-semibold text-gray-800">{wave.code}</h5>
-                        <p className="text-xs text-gray-500 mt-1">创建于 {wave.createTime}</p>
-                      </div>
-                      <span className={`text-xs px-2 py-1 rounded-full ${statusColors[wave.status]}`}>
-                        {statusLabels[wave.status]}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3 text-sm">
-                      <div className="p-3 bg-gray-50 rounded-lg">
-                        <span className="text-xs text-gray-500">订单数</span>
-                        <p className="font-semibold text-gray-800 mt-1">{wave.orderCount} 单</p>
-                      </div>
-                      <div className="p-3 bg-gray-50 rounded-lg">
-                        <span className="text-xs text-gray-500">操作员</span>
-                        <p className="font-semibold text-gray-800 mt-1">{wave.operator}</p>
-                      </div>
-                    </div>
-                    {wave.status === 'pending' && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleReleaseWave(wave.id); }}
-                        className="mt-4 w-full py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 flex items-center justify-center gap-1"
+                {state.pickingWaves.map((wave) => {
+                  const waveOrders = getWaveOrders(wave.id)
+                  return (
+                    <div
+                      key={wave.id}
+                      className={`p-5 border rounded-xl transition-all ${
+                        selectedWave === wave.id
+                          ? 'border-blue-500 bg-blue-50'
+                          : 'border-gray-200 hover:border-gray-300 hover:shadow-card'
+                      }`}
+                    >
+                      <div
+                        onClick={() => setSelectedWave(selectedWave === wave.id ? null : wave.id)}
+                        className="cursor-pointer"
                       >
-                        <ArrowRight className="w-4 h-4" />
-                        下达波次
-                      </button>
-                    )}
-                    {wave.status === 'processing' && (
-                      <div className="mt-4 w-full py-2 text-sm font-medium text-purple-600 bg-purple-50 rounded-lg text-center flex items-center justify-center gap-1">
-                        <Clock className="w-4 h-4" />
-                        处理中...
+                        <div className="flex items-center justify-between mb-3">
+                          <div>
+                            <h5 className="font-semibold text-gray-800">{wave.code}</h5>
+                            <p className="text-xs text-gray-500 mt-1">创建于 {wave.createTime}</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-xs px-2 py-1 rounded-full ${statusColors[wave.status]}`}>
+                              {statusLabels[wave.status]}
+                            </span>
+                            {selectedWave === wave.id ? (
+                              <ChevronUp className="w-4 h-4 text-gray-400" />
+                            ) : (
+                              <ChevronDown className="w-4 h-4 text-gray-400" />
+                            )}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3 text-sm">
+                          <div className="p-3 bg-gray-50 rounded-lg">
+                            <span className="text-xs text-gray-500">订单数</span>
+                            <p className="font-semibold text-gray-800 mt-1">{waveOrders.length} 单</p>
+                          </div>
+                          <div className="p-3 bg-gray-50 rounded-lg">
+                            <span className="text-xs text-gray-500">操作员</span>
+                            <p className="font-semibold text-gray-800 mt-1">{wave.operator}</p>
+                          </div>
+                        </div>
                       </div>
-                    )}
-                  </div>
-                ))}
+
+                      {selectedWave === wave.id && waveOrders.length > 0 && (
+                        <div className="mt-4 pt-4 border-t border-gray-200">
+                          <h6 className="text-xs font-medium text-gray-500 mb-2">关联订单列表</h6>
+                          <div className="space-y-2 max-h-48 overflow-y-auto">
+                            {waveOrders.map((order) => (
+                              <div
+                                key={order.id}
+                                className="p-2 bg-white rounded-lg border border-gray-100 text-xs"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="font-medium text-blue-600">{order.code}</span>
+                                  <span className={`px-1.5 py-0.5 rounded-full ${statusColors[order.status]}`}>
+                                    {statusLabels[order.status]}
+                                  </span>
+                                </div>
+                                <div className="mt-1 text-gray-500 flex items-center justify-between">
+                                  <span>{order.materialName} × {order.quantity}</span>
+                                  <span>{order.customer}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {wave.status === 'pending' && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleReleaseWave(wave.id); }}
+                          className="mt-4 w-full py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 flex items-center justify-center gap-1"
+                        >
+                          <ArrowRight className="w-4 h-4" />
+                          下达波次
+                        </button>
+                      )}
+                      {wave.status === 'processing' && (
+                        <div className="mt-4 w-full py-2 text-sm font-medium text-purple-600 bg-purple-50 rounded-lg text-center flex items-center justify-center gap-1">
+                          <Clock className="w-4 h-4" />
+                          处理中...
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
 
               <div className="mt-6 p-5 bg-blue-50 border border-blue-100 rounded-xl">

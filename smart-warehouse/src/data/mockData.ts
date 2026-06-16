@@ -1,7 +1,8 @@
 import type {
   Material, Pallet, Location, Stacker, AGV,
   InboundOrder, OutboundOrder, PickingWave,
-  StockCheck, StockAlert, StackerTask, AGVTask
+  StockCheck, StockAlert, StackerTask, AGVTask,
+  InventoryRecord
 } from '@/types'
 
 export const mockMaterials: Material[] = [
@@ -190,3 +191,32 @@ export const mockAGVTasks: AGVTask[] = Array.from({ length: 15 }, (_, i) => ({
   createTime: new Date(Date.now() - Math.random() * 12 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' '),
   estimatedTime: 5 + Math.floor(Math.random() * 15),
 }))
+
+const inventoryRecordTypes: InventoryRecord['type'][] = ['inbound', 'outbound', 'transfer', 'adjust', 'check']
+const operators = ['张三', '李四', '王五', '赵六']
+export const mockInventoryRecords: InventoryRecord[] = Array.from({ length: 30 }, (_, i) => {
+  const type = inventoryRecordTypes[i % inventoryRecordTypes.length]
+  const mat = mockMaterials[i % mockMaterials.length]
+  const beforeQty = Math.floor(Math.random() * 800) + 200
+  const qtyChange = Math.floor(Math.random() * 200) + 50
+  const afterQty = type === 'inbound' ? beforeQty + qtyChange :
+                   type === 'outbound' ? beforeQty - qtyChange :
+                   type === 'adjust' ? beforeQty + (Math.random() > 0.5 ? qtyChange : -qtyChange) :
+                   beforeQty
+  return {
+    id: `IR${i + 1}`,
+    type,
+    materialId: mat.id,
+    materialName: mat.name,
+    quantity: qtyChange,
+    beforeQty,
+    afterQty,
+    palletCode: mockPallets[i % mockPallets.length].code,
+    locationCode: mockLocations[i % mockLocations.length].code,
+    orderCode: type === 'inbound' ? `IN${String(2024001 + i)}` :
+                type === 'outbound' ? `OUT${String(2024001 + i)}` : undefined,
+    operator: operators[i % operators.length],
+    timestamp: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' '),
+    remark: type === 'check' ? '盘点差异调整' : type === 'transfer' ? '移库操作' : undefined,
+  }
+}).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())

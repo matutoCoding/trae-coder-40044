@@ -1,32 +1,78 @@
 import { useState, useMemo } from 'react'
 import {
   Route, Search, Plus, Play, Battery, BatteryCharging,
-  MapPin, Clock, AlertTriangle, CheckCircle2, RefreshCw, Navigation, Pause
+  MapPin, Clock, AlertTriangle, CheckCircle2, RefreshCw, Navigation, Pause,
+  X, History, Package, ArrowRight, User, Calendar, Activity
 } from 'lucide-react'
-import { useWarehouse } from '@/context/WarehouseContext'
+import { useWarehouse, generateId, getNowTime } from '@/context/WarehouseContext'
 import { statusColors, statusLabels } from '@/utils'
+import type { AGVTask, TaskLog } from '@/types'
 
-type TabType = 'monitor' | 'tasks' | 'map'
+type TabType = 'monitor' | 'tasks' | 'taskLogs' | 'map'
 
 export default function AGVPage() {
   const { state, dispatch } = useWarehouse()
   const [tab, setTab] = useState<TabType>('monitor')
   const [selectedAGV, setSelectedAGV] = useState<string | null>(null)
+  const [selectedTask, setSelectedTask] = useState<AGVTask | null>(null)
+  const [showDetailModal, setShowDetailModal] = useState(false)
 
   const stats = useMemo(() => ({
     total: state.agvs.length,
     running: state.agvs.filter(a => a.status === 'moving' || a.status === 'loading').length,
     charging: state.agvs.filter(a => a.status === 'charging').length,
     fault: state.agvs.filter(a => a.status === 'fault').length,
+    idle: state.agvs.filter(a => a.status === 'idle').length,
     pendingTasks: state.agvTasks.filter(t => t.status === 'pending').length,
     executingTasks: state.agvTasks.filter(t => t.status === 'executing').length,
-  }), [state.agvs, state.agvTasks])
+    completedTasks: state.agvTasks.filter(t => t.status === 'completed').length,
+    failedTasks: state.agvTasks.filter(t => t.status === 'failed').length,
+    totalTasks: state.agvTasks.length,
+    totalLogs: state.taskLogs.filter(l => l.taskType === 'agv').length,
+  }), [state.agvs, state.agvTasks, state.taskLogs])
+
+  const agvTaskLogs = useMemo(() => {
+    return state.taskLogs
+      .filter(log => log.taskType === 'agv')
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+  }, [state.taskLogs])
+
+  const getTaskLogs = (taskId: string) => {
+    return state.taskLogs
+      .filter(log => log.taskId === taskId)
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+  }
+
+  const addTaskLog = (
+    task: AGVTask,
+    action: TaskLog['action'],
+    result: string,
+    operator: string = '系统管理员'
+  ) => {
+    const agv = state.agvs.find(a => a.id === task.agvId)
+    const log: TaskLog = {
+      id: generateId('LOG'),
+      taskId: task.id,
+      taskType: 'agv',
+      action,
+      operator,
+      timestamp: getNowTime(),
+      deviceId: task.agvId,
+      deviceCode: agv?.code || '',
+      palletCode: task.palletCode,
+      fromLocation: task.fromPoint,
+      toLocation: task.toPoint,
+      result,
+    }
+    dispatch({ type: 'ADD_TASK_LOG', payload: log })
+  }
 
   const handleExecuteTask = (taskId: string) => {
     const task = state.agvTasks.find(t => t.id === taskId)
     if (!task) return
     dispatch({ type: 'UPDATE_AGV_TASK', payload: { id: taskId, status: 'executing' } })
     dispatch({ type: 'UPDATE_AGV', payload: { id: task.agvId, status: 'moving', currentTask: task.code } })
+    addTaskLog(task, 'execute', `任务 ${task.code} 已开始执行，AGV 前往 ${task.fromPoint}`)
   }
 
   const handleDispatchTask = (taskId: string) => {
@@ -34,6 +80,7 @@ export default function AGVPage() {
     if (!task) return
     dispatch({ type: 'UPDATE_AGV_TASK', payload: { id: taskId, status: 'executing' } })
     dispatch({ type: 'UPDATE_AGV', payload: { id: task.agvId, status: 'loading', currentTask: task.code } })
+    addTaskLog(task, 'dispatch', `任务 ${task.code} 已调度，AGV 前往 ${task.fromPoint} 装载货物`)
   }
 
   const handleCancelTask = (taskId: string) => {
@@ -48,10 +95,10 @@ export default function AGVPage() {
         payload: {
           id: task.agvId,
           status: (agv?.battery || 100) < 20 ? 'charging' : 'idle',
-          currentTask: undefined
         }
       })
     }
+    addTaskLog(task, 'cancel', `任务 ${task.code} 已取消`)
   }
 
   const handlePauseTask = (taskId: string) => {
@@ -62,6 +109,7 @@ export default function AGVPage() {
     if (!stillExecuting) {
       dispatch({ type: 'UPDATE_AGV', payload: { id: task.agvId, status: 'idle' } })
     }
+    addTaskLog(task, 'pause', `任务 ${task.code} 已暂停，设备恢复空闲状态`)
   }
 
   const handleCompleteTask = (taskId: string) => {
@@ -79,11 +127,33 @@ export default function AGVPage() {
         battery: Math.max(5, (agv?.battery || 100) - 5)
       }
     })
+    addTaskLog(task, 'complete', `任务 ${task.code} 已完成，货物已送达 ${task.toPoint}`)
+  }
+
+  const handleShowDetail = (task: AGVTask) => {
+    setSelectedTask(task)
+    setShowDetailModal(true)
+  }
+
+  const actionLabels: Record<TaskLog['action'], string> = {
+    execute: '执行',
+    dispatch: '调度',
+    pause: '暂停',
+    cancel: '取消',
+    complete: '完成',
+  }
+
+  const actionIcons: Record<TaskLog['action'], typeof Play> = {
+    execute: Play,
+    dispatch: Navigation,
+    pause: Pause,
+    cancel: X,
+    complete: CheckCircle2,
   }
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
         <div className="bg-white rounded-xl shadow-card p-5">
           <div className="flex items-center justify-between">
             <div>
@@ -103,6 +173,28 @@ export default function AGVPage() {
             </div>
             <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
               <Play className="w-6 h-6 text-green-600" />
+            </div>
+          </div>
+        </div>
+        <div className="bg-white rounded-xl shadow-card p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-gray-500">空闲</p>
+              <p className="text-2xl font-bold text-gray-600 mt-1">{stats.idle}</p>
+            </div>
+            <div className="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center">
+              <Clock className="w-6 h-6 text-gray-600" />
+            </div>
+          </div>
+        </div>
+        <div className="bg-white rounded-xl shadow-card p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-gray-500">充电中</p>
+              <p className="text-2xl font-bold text-amber-600 mt-1">{stats.charging}</p>
+            </div>
+            <div className="w-12 h-12 bg-amber-100 rounded-xl flex items-center justify-center">
+              <BatteryCharging className="w-6 h-6 text-amber-600" />
             </div>
           </div>
         </div>
@@ -136,6 +228,7 @@ export default function AGVPage() {
             {[
               { id: 'monitor', label: '设备监控', icon: Route },
               { id: 'tasks', label: '搬运任务', icon: Clock },
+              { id: 'taskLogs', label: '任务日志', icon: History },
               { id: 'map', label: '路径地图', icon: MapPin },
             ].map((t) => {
               const Icon = t.icon
@@ -151,6 +244,11 @@ export default function AGVPage() {
                 >
                   <Icon className="w-4 h-4" />
                   {t.label}
+                  {t.id === 'taskLogs' && stats.totalLogs > 0 && (
+                    <span className="ml-1 px-1.5 py-0.5 text-xs bg-blue-100 text-blue-600 rounded-full">
+                      {stats.totalLogs}
+                    </span>
+                  )}
                 </button>
               )
             })}
@@ -238,7 +336,7 @@ export default function AGVPage() {
                   </div>
                   <div className="p-4 bg-white rounded-lg">
                     <div className="text-xs text-gray-500">今日完成</div>
-                    <div className="text-lg font-semibold text-green-600 mt-1">{state.agvTasks.filter(t => t.status === 'completed').length} 个</div>
+                    <div className="text-lg font-semibold text-green-600 mt-1">{stats.completedTasks} 个</div>
                   </div>
                 </div>
               </div>
@@ -290,7 +388,11 @@ export default function AGVPage() {
                   </thead>
                   <tbody>
                     {state.agvTasks.map((task) => (
-                      <tr key={task.id} className="border-b border-gray-50 hover:bg-gray-50">
+                      <tr
+                        key={task.id}
+                        className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer"
+                        onClick={() => handleShowDetail(task)}
+                      >
                         <td className="px-4 py-3 text-sm font-medium text-blue-600">{task.code}</td>
                         <td className="px-4 py-3 text-sm text-gray-600">
                           {state.agvs.find(a => a.id === task.agvId)?.code}
@@ -306,7 +408,7 @@ export default function AGVPage() {
                           </span>
                         </td>
                         <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                             {task.status === 'pending' && (
                               <>
                                 <button onClick={() => handleExecuteTask(task.id)} className="text-xs px-2 py-1 text-green-600 bg-green-50 rounded hover:bg-green-100">执行</button>
@@ -332,6 +434,90 @@ export default function AGVPage() {
                   </tbody>
                 </table>
               </div>
+            </div>
+          )}
+
+          {tab === 'taskLogs' && (
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <h4 className="font-semibold text-gray-800 flex items-center gap-2">
+                  <History className="w-5 h-5 text-blue-600" />
+                  AGV 任务操作日志
+                </h4>
+                <div className="text-sm text-gray-500">
+                  共 {agvTaskLogs.length} 条记录
+                </div>
+              </div>
+
+              {agvTaskLogs.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">
+                  <History className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                  <p>暂无任务日志</p>
+                </div>
+              ) : (
+                <div className="relative">
+                  <div className="absolute left-6 top-0 bottom-0 w-0.5 bg-gray-200"></div>
+                  <div className="space-y-4">
+                    {agvTaskLogs.map((log) => {
+                      const ActionIcon = actionIcons[log.action]
+                      return (
+                        <div key={log.id} className="relative pl-14">
+                          <div className={`absolute left-4 w-5 h-5 rounded-full border-2 border-white ${statusColors[log.action]} flex items-center justify-center`}>
+                            <ActionIcon className="w-3 h-3" />
+                          </div>
+                          <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 hover:shadow-card transition-shadow">
+                            <div className="flex items-start justify-between mb-3">
+                              <div className="flex items-center gap-2">
+                                <span className={`text-xs px-2 py-1 rounded-full ${statusColors[log.action]}`}>
+                                  {actionLabels[log.action]}
+                                </span>
+                                <span className="text-sm font-medium text-gray-800">
+                                  {log.deviceCode}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1 text-xs text-gray-500">
+                                <Calendar className="w-3 h-3" />
+                                {log.timestamp}
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                              <div>
+                                <div className="text-gray-500 text-xs mb-1">操作人</div>
+                                <div className="flex items-center gap-1 text-gray-800">
+                                  <User className="w-3 h-3" />
+                                  {log.operator}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="text-gray-500 text-xs mb-1">托盘号</div>
+                                <div className="flex items-center gap-1 text-gray-800 font-mono">
+                                  <Package className="w-3 h-3" />
+                                  {log.palletCode || '-'}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="text-gray-500 text-xs mb-1">路径</div>
+                                <div className="flex items-center gap-1 text-gray-800 font-mono">
+                                  <span>{log.fromLocation}</span>
+                                  <ArrowRight className="w-3 h-3 text-blue-500" />
+                                  <span>{log.toLocation}</span>
+                                </div>
+                              </div>
+                              <div>
+                                <div className="text-gray-500 text-xs mb-1">处理结果</div>
+                                <div className="flex items-center gap-1 text-gray-800">
+                                  <Activity className="w-3 h-3" />
+                                  {log.result}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -451,6 +637,145 @@ export default function AGVPage() {
           )}
         </div>
       </div>
+
+      {showDetailModal && selectedTask && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <h3 className="text-lg font-semibold text-gray-800">任务详情</h3>
+              <button
+                onClick={() => setShowDetailModal(false)}
+                className="p-1 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-gray-50 rounded-xl p-4">
+                    <div className="text-xs text-gray-500 mb-1">任务编号</div>
+                    <div className="text-lg font-semibold text-blue-600">{selectedTask.code}</div>
+                  </div>
+                  <div className="bg-gray-50 rounded-xl p-4">
+                    <div className="text-xs text-gray-500 mb-1">任务状态</div>
+                    <div className="mt-1">
+                      <span className={`text-sm px-3 py-1 rounded-full ${statusColors[selectedTask.status]}`}>
+                        {statusLabels[selectedTask.status]}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-gray-50 rounded-xl p-4">
+                  <h4 className="text-sm font-medium text-gray-700 mb-3">基本信息</h4>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <div className="text-xs text-gray-500 mb-1">执行设备</div>
+                      <div className="text-sm text-gray-800 flex items-center gap-1">
+                        <Route className="w-4 h-4 text-blue-500" />
+                        {state.agvs.find(a => a.id === selectedTask.agvId)?.code}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500 mb-1">托盘号</div>
+                      <div className="text-sm text-gray-800 flex items-center gap-1 font-mono">
+                        <Package className="w-4 h-4 text-amber-500" />
+                        {selectedTask.palletCode || '-'}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500 mb-1">起点</div>
+                      <div className="text-sm text-gray-800 font-mono">{selectedTask.fromPoint}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500 mb-1">终点</div>
+                      <div className="text-sm text-gray-800 font-mono">{selectedTask.toPoint}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500 mb-1">预计耗时</div>
+                      <div className="text-sm text-gray-800">{selectedTask.estimatedTime} 分钟</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500 mb-1">创建时间</div>
+                      <div className="text-sm text-gray-800">{selectedTask.createTime}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-gray-50 rounded-xl p-4">
+                  <h4 className="text-sm font-medium text-gray-700 mb-3 flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-blue-500" />
+                    处理结果
+                  </h4>
+                  <div className="text-sm text-gray-800">
+                    {selectedTask.status === 'completed' && '任务已成功完成，货物已送达目标位置'}
+                    {selectedTask.status === 'failed' && '任务执行失败，请检查设备状态'}
+                    {selectedTask.status === 'executing' && '任务正在执行中...'}
+                    {selectedTask.status === 'pending' && '任务待执行，等待调度...'}
+                  </div>
+                </div>
+
+                <div>
+                  <h4 className="text-sm font-medium text-gray-700 mb-3 flex items-center gap-2">
+                    <History className="w-4 h-4 text-blue-500" />
+                    操作日志
+                  </h4>
+                  {(() => {
+                    const logs = getTaskLogs(selectedTask.id)
+                    if (logs.length === 0) {
+                      return (
+                        <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-xl">
+                          <Clock className="w-8 h-8 mx-auto mb-2 text-gray-300" />
+                          <p className="text-sm">暂无操作日志</p>
+                        </div>
+                      )
+                    }
+                    return (
+                      <div className="relative">
+                        <div className="absolute left-5 top-2 bottom-2 w-0.5 bg-gray-200"></div>
+                        <div className="space-y-3">
+                          {logs.map((log) => {
+                            const ActionIcon = actionIcons[log.action]
+                            return (
+                              <div key={log.id} className="relative pl-12">
+                                <div className={`absolute left-3 w-5 h-5 rounded-full border-2 border-white ${statusColors[log.action]} flex items-center justify-center`}>
+                                  <ActionIcon className="w-3 h-3" />
+                                </div>
+                                <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                  <div className="flex items-center justify-between mb-1">
+                                    <span className={`text-xs px-2 py-0.5 rounded-full ${statusColors[log.action]}`}>
+                                      {actionLabels[log.action]}
+                                    </span>
+                                    <span className="text-xs text-gray-500">{log.timestamp}</span>
+                                  </div>
+                                  <div className="text-sm text-gray-600">{log.result}</div>
+                                  <div className="mt-1 text-xs text-gray-400 flex items-center gap-1">
+                                    <User className="w-3 h-3" />
+                                    {log.operator}
+                                  </div>
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })()}
+                </div>
+              </div>
+            </div>
+            <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-3">
+              <button
+                onClick={() => setShowDetailModal(false)}
+                className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

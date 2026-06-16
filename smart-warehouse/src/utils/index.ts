@@ -36,6 +36,13 @@ export const statusColors: Record<string, string> = {
   outbound: 'bg-blue-100 text-blue-700',
   transfer: 'bg-purple-100 text-purple-700',
   executing: 'bg-blue-100 text-blue-700',
+  adjust: 'bg-yellow-100 text-yellow-700',
+  check: 'bg-cyan-100 text-cyan-700',
+  execute: 'bg-blue-100 text-blue-700',
+  dispatch: 'bg-purple-100 text-purple-700',
+  pause: 'bg-amber-100 text-amber-700',
+  cancel: 'bg-red-100 text-red-700',
+  complete: 'bg-green-100 text-green-700',
 }
 
 export const statusLabels: Record<string, string> = {
@@ -75,7 +82,14 @@ export const statusLabels: Record<string, string> = {
   inbound: '入库',
   outbound: '出库',
   transfer: '移库',
+  adjust: '库存调整',
+  check: '盘点',
   executing: '执行中',
+  execute: '执行',
+  dispatch: '调度',
+  pause: '暂停',
+  cancel: '取消',
+  complete: '完成',
 }
 
 export function formatDate(dateStr: string): string {

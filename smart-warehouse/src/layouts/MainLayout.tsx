@@ -3,7 +3,7 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Package, Bot, Truck, ClipboardList,
   Route, AlertTriangle, Menu, X, ChevronRight,
-  Warehouse, User
+  Warehouse, User, Database
 } from 'lucide-react'
 
 const menuItems = [
@@ -11,6 +11,7 @@ const menuItems = [
   { id: 'inbound', name: '入库上架', icon: Package, path: '/inbound' },
   { id: 'stacker', name: '堆垛机调度', icon: Bot, path: '/stacker' },
   { id: 'outbound', name: '拣选出库', icon: Truck, path: '/outbound' },
+  { id: 'inventory', name: '库存台账', icon: Database, path: '/inventory' },
   { id: 'stockcheck', name: '盘点管理', icon: ClipboardList, path: '/stockcheck' },
   { id: 'agv', name: 'AGV搬运', icon: Route, path: '/agv' },
   { id: 'alert', name: '库存预警', icon: AlertTriangle, path: '/alert' },

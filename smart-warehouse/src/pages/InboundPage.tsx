@@ -1,14 +1,21 @@
 import { useState, useMemo } from 'react'
 import {
   QrCode, Search, Plus, Package, MapPin, CheckCircle2,
-  Clock, FileText, ArrowRight, RefreshCw
+  Clock, FileText, ArrowRight, RefreshCw, X, ChevronDown
 } from 'lucide-react'
-import { useWarehouse } from '@/context/WarehouseContext'
+import { useWarehouse, generateId, getNowTime, getMaterialStock } from '@/context/WarehouseContext'
 import { mockMaterials } from '@/data/mockData'
 import { statusColors, statusLabels } from '@/utils'
-import type { InboundOrder, Location } from '@/types'
+import type { InboundOrder, Location, Material } from '@/types'
 
 type TabType = 'orders' | 'scan' | 'allocate'
+
+interface FormData {
+  materialId: string
+  quantity: number
+  palletCode: string
+  supplier: string
+}
 
 export default function InboundPage() {
   const { state, dispatch } = useWarehouse()
@@ -20,6 +27,19 @@ export default function InboundPage() {
   const [activeOrderId, setActiveOrderId] = useState<string | null>(null)
   const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null)
   const [allocateSuccess, setAllocateSuccess] = useState(false)
+  const [showCreateForm, setShowCreateForm] = useState(false)
+  const [formData, setFormData] = useState<FormData>({
+    materialId: '',
+    quantity: 0,
+    palletCode: '',
+    supplier: ''
+  })
+  const [materialDropdownOpen, setMaterialDropdownOpen] = useState(false)
+
+  const selectedMaterial: Material | undefined = useMemo(() =>
+    mockMaterials.find(m => m.id === formData.materialId),
+    [formData.materialId]
+  )
 
   const activeOrder: InboundOrder | undefined = useMemo(() => {
     if (activeOrderId) return state.inboundOrders.find(o => o.id === activeOrderId)
@@ -47,6 +67,55 @@ export default function InboundPage() {
     return emptyLocations[0]
   }, [emptyLocations, selectedLocationId, state.locations])
 
+  const handleCreateOrder = () => {
+    if (!formData.materialId || !formData.quantity || !formData.palletCode || !formData.supplier) {
+      alert('请填写完整的入库单信息')
+      return
+    }
+
+    const material = mockMaterials.find(m => m.id === formData.materialId)
+    if (!material) return
+
+    const now = getNowTime()
+    const orderId = generateId('IB')
+    const orderCode = 'IN' + String(2024000 + state.inboundOrders.length + 1)
+    const palletId = generateId('P')
+
+    const newOrder: InboundOrder = {
+      id: orderId,
+      code: orderCode,
+      materialId: material.id,
+      materialName: material.name,
+      quantity: formData.quantity,
+      palletCode: formData.palletCode,
+      supplier: formData.supplier,
+      status: 'pending',
+      createTime: now,
+      operator: '当前操作员'
+    }
+
+    const newPallet = {
+      id: palletId,
+      code: formData.palletCode,
+      materialId: material.id,
+      materialName: material.name,
+      quantity: formData.quantity,
+      unit: material.unit,
+      inboundTime: now,
+      productionDate: now.slice(0, 10),
+      status: 'empty' as const
+    }
+
+    dispatch({ type: 'ADD_INBOUND_ORDER', payload: newOrder })
+    dispatch({ type: 'ADD_PALLET', payload: newPallet })
+
+    setShowCreateForm(false)
+    setFormData({ materialId: '', quantity: 0, palletCode: '', supplier: '' })
+    setActiveOrderId(orderId)
+    setScanCode(orderCode)
+    setTab('scan')
+  }
+
   const handleScan = () => {
     const trimmed = scanCode.trim()
     if (!trimmed) return
@@ -68,10 +137,32 @@ export default function InboundPage() {
 
   const handleConfirmScan = () => {
     if (!scanResult || scanResult.type === 'material' || scanResult.error) return
+
+    const beforeQty = getMaterialStock(state, scanResult.materialId)
+
     dispatch({
       type: 'UPDATE_INBOUND_ORDER',
       payload: { id: scanResult.id, status: 'allocating' }
     })
+
+    dispatch({
+      type: 'ADD_INVENTORY_RECORD',
+      payload: {
+        id: generateId('IR'),
+        type: 'inbound',
+        materialId: scanResult.materialId,
+        materialName: scanResult.materialName,
+        quantity: scanResult.quantity,
+        beforeQty,
+        afterQty: beforeQty + scanResult.quantity,
+        palletCode: scanResult.palletCode,
+        orderCode: scanResult.code,
+        operator: '当前操作员',
+        timestamp: getNowTime(),
+        remark: '扫码确认入库'
+      }
+    })
+
     setActiveOrderId(scanResult.id)
     setScanResult(null)
     setScanCode('')
@@ -80,23 +171,64 @@ export default function InboundPage() {
 
   const handleConfirmAllocate = () => {
     if (!activeOrder || !recommendedLocation) return
+
+    const beforeQty = getMaterialStock(state, activeOrder.materialId)
+
     dispatch({
       type: 'UPDATE_INBOUND_ORDER',
-      payload: { id: activeOrder.id, status: 'stacking', locationId: recommendedLocation.id, locationCode: recommendedLocation.code }
+      payload: {
+        id: activeOrder.id,
+        status: 'stacking',
+        locationId: recommendedLocation.id,
+        locationCode: recommendedLocation.code
+      }
     })
+
     dispatch({
       type: 'UPDATE_LOCATION',
-      payload: { id: recommendedLocation.id, status: 'reserved', palletCode: activeOrder.palletCode }
+      payload: {
+        id: recommendedLocation.id,
+        status: 'occupied',
+        palletCode: activeOrder.palletCode,
+        palletId: state.pallets.find(p => p.code === activeOrder.palletCode)?.id,
+        currentLoad: activeOrder.quantity,
+        category: mockMaterials.find(m => m.id === activeOrder.materialId)?.category
+      }
     })
+
     if (activeOrder.palletCode) {
       const pallet = state.pallets.find(p => p.code === activeOrder.palletCode)
       if (pallet) {
         dispatch({
           type: 'UPDATE_PALLET',
-          payload: { id: pallet.id, status: 'stacking', locationCode: recommendedLocation.code }
+          payload: {
+            id: pallet.id,
+            status: 'stored',
+            locationCode: recommendedLocation.code
+          }
         })
       }
     }
+
+    dispatch({
+      type: 'ADD_INVENTORY_RECORD',
+      payload: {
+        id: generateId('IR'),
+        type: 'inbound',
+        materialId: activeOrder.materialId,
+        materialName: activeOrder.materialName,
+        quantity: activeOrder.quantity,
+        beforeQty,
+        afterQty: beforeQty + activeOrder.quantity,
+        palletCode: activeOrder.palletCode,
+        locationCode: recommendedLocation.code,
+        orderCode: activeOrder.code,
+        operator: '当前操作员',
+        timestamp: getNowTime(),
+        remark: '货位分配完成，物料上架'
+      }
+    })
+
     setSelectedLocationId(null)
     setAllocateSuccess(true)
     setTimeout(() => {
@@ -219,15 +351,116 @@ export default function InboundPage() {
                   <option value="stacking">上架中</option>
                   <option value="completed">已完成</option>
                 </select>
-                <button className="flex items-center gap-1 px-4 py-2 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700">
-                  <Plus className="w-4 h-4" />
-                  新建入库单
+                <button
+                  onClick={() => setShowCreateForm(!showCreateForm)}
+                  className={`flex items-center gap-1 px-4 py-2 text-sm text-white rounded-lg transition-colors ${
+                    showCreateForm ? 'bg-gray-600 hover:bg-gray-700' : 'bg-blue-600 hover:bg-blue-700'
+                  }`}
+                >
+                  {showCreateForm ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                  {showCreateForm ? '取消' : '新建入库单'}
                 </button>
                 <button className="flex items-center gap-1 px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50">
                   <RefreshCw className="w-4 h-4" />
                   刷新
                 </button>
               </div>
+
+              {showCreateForm && (
+                <div className="mb-6 p-5 bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-100 rounded-xl">
+                  <h4 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                    <Plus className="w-5 h-5 text-blue-600" />
+                    新建入库单
+                  </h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="relative">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">物料</label>
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() => setMaterialDropdownOpen(!materialDropdownOpen)}
+                          className="w-full px-4 py-2.5 text-sm text-left border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white flex items-center justify-between"
+                        >
+                          <span className={selectedMaterial ? 'text-gray-800' : 'text-gray-400'}>
+                            {selectedMaterial ? `${selectedMaterial.code} - ${selectedMaterial.name}` : '请选择物料'}
+                          </span>
+                          <ChevronDown className="w-4 h-4 text-gray-400" />
+                        </button>
+                        {materialDropdownOpen && (
+                          <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-auto">
+                            {mockMaterials.map((m) => (
+                              <div
+                                key={m.id}
+                                onClick={() => {
+                                  setFormData({ ...formData, materialId: m.id })
+                                  setMaterialDropdownOpen(false)
+                                }}
+                                className="px-4 py-2.5 text-sm hover:bg-blue-50 cursor-pointer"
+                              >
+                                <div className="font-medium text-gray-800">{m.code} - {m.name}</div>
+                                <div className="text-xs text-gray-500">{m.spec} | {m.category}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">数量</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={formData.quantity || ''}
+                        onChange={(e) => setFormData({ ...formData, quantity: parseInt(e.target.value) || 0 })}
+                        placeholder="请输入数量"
+                        className="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">托盘号</label>
+                      <input
+                        type="text"
+                        value={formData.palletCode}
+                        onChange={(e) => setFormData({ ...formData, palletCode: e.target.value })}
+                        placeholder="例如：PLT0001"
+                        className="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">供应商</label>
+                      <select
+                        value={formData.supplier}
+                        onChange={(e) => setFormData({ ...formData, supplier: e.target.value })}
+                        className="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="">请选择供应商</option>
+                        <option value="供应商A">供应商A</option>
+                        <option value="供应商B">供应商B</option>
+                        <option value="供应商C">供应商C</option>
+                        <option value="供应商D">供应商D</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="mt-4 flex justify-end gap-3">
+                    <button
+                      onClick={() => {
+                        setShowCreateForm(false)
+                        setFormData({ materialId: '', quantity: 0, palletCode: '', supplier: '' })
+                      }}
+                      className="px-5 py-2.5 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"
+                    >
+                      取消
+                    </button>
+                    <button
+                      onClick={handleCreateOrder}
+                      className="px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 flex items-center gap-2"
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      提交入库单
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="overflow-x-auto">
                 <table className="w-full">
@@ -265,7 +498,7 @@ export default function InboundPage() {
                           <div className="flex items-center gap-2">
                             {order.status === 'pending' && (
                               <button
-                                onClick={() => { setScanCode(order.code); setTab('scan'); }}
+                                onClick={() => { setScanCode(order.code); setActiveOrderId(order.id); setTab('scan'); }}
                                 className="text-xs px-2 py-1 text-blue-600 bg-blue-50 rounded hover:bg-blue-100"
                               >
                                 扫码
@@ -307,6 +540,15 @@ export default function InboundPage() {
                 <h3 className="text-lg font-semibold text-gray-800">来料入库扫码</h3>
                 <p className="text-sm text-gray-500 mt-1">使用扫码枪扫描条码或手动输入单号/物料编码</p>
               </div>
+
+              {activeOrder && (
+                <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+                  <div className="text-xs text-amber-600 font-medium mb-1">当前待处理入库单</div>
+                  <div className="text-sm font-semibold text-gray-800">
+                    {activeOrder.code} · {activeOrder.materialName} · {activeOrder.quantity}件 · 托盘 {activeOrder.palletCode}
+                  </div>
+                </div>
+              )}
 
               <div className="space-y-4">
                 <div>
@@ -400,6 +642,7 @@ export default function InboundPage() {
                     <li>• 支持扫描入库单号、托盘条码、物料编码</li>
                     <li>• 扫码成功后系统自动校验物料信息</li>
                     <li>• 校验通过后进入智能货位分配环节</li>
+                    <li>• 扫码确认后自动记录库存台账</li>
                   </ul>
                 </div>
               </div>
@@ -413,7 +656,7 @@ export default function InboundPage() {
                   <CheckCircle2 className="w-6 h-6 text-green-600" />
                   <div>
                     <div className="font-medium text-green-800">货位分配成功</div>
-                    <div className="text-sm text-green-600">入库单已切换为上架中，推荐货位已预留</div>
+                    <div className="text-sm text-green-600">入库单已切换为上架中，货位已占用，库存台账已记录</div>
                   </div>
                 </div>
               )}
@@ -604,6 +847,7 @@ export default function InboundPage() {
                       <li>• 同类聚集：相同品类物料就近存放</li>
                       <li>• 重量分布：重物放低层，轻物放高层</li>
                       <li>• 周转率：高周转物料靠近巷道口</li>
+                      <li>• 分配完成自动记录库存台账</li>
                     </ul>
                   </div>
                 </div>
