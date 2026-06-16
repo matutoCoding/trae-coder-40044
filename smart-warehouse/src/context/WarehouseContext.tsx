@@ -1,12 +1,12 @@
 import { createContext, useContext, useReducer, type ReactNode } from 'react'
 import type {
   InboundOrder, OutboundOrder, PickingWave, StackerTask, AGVTask,
-  Stacker, AGV, Location, Pallet, TaskLog, InventoryRecord
+  Stacker, AGV, Location, Pallet, TaskLog, InventoryRecord, StockAlert
 } from '@/types'
 import {
   mockInboundOrders, mockOutboundOrders, mockPickingWaves,
   mockStackerTasks, mockAGVTasks, mockStackers, mockAGVs,
-  mockLocations, mockPallets, mockInventoryRecords
+  mockLocations, mockPallets, mockStockAlerts, mockMaterials, mockInventoryRecords
 } from '@/data/mockData'
 
 interface WarehouseState {
@@ -21,6 +21,7 @@ interface WarehouseState {
   pallets: Pallet[]
   taskLogs: TaskLog[]
   inventoryRecords: InventoryRecord[]
+  alerts: StockAlert[]
 }
 
 type Action =
@@ -41,8 +42,92 @@ type Action =
   | { type: 'BATCH_UPDATE_OUTBOUND_WAVE'; waveId: string; waveStatus: PickingWave['status']; orderStatus: OutboundOrder['status'] }
   | { type: 'ADD_TASK_LOG'; payload: TaskLog }
   | { type: 'ADD_INVENTORY_RECORD'; payload: InventoryRecord }
+  | { type: 'UPDATE_ALERT'; payload: Partial<StockAlert> & { id: string } }
+  | { type: 'REFRESH_ALERTS'; payload: StockAlert[] }
 
-const initialState: WarehouseState = {
+function computeDynamicAlerts(state: Omit<WarehouseState, 'alerts'>): StockAlert[] {
+  const alerts: StockAlert[] = []
+  const stockMap = new Map<string, number>()
+
+  state.pallets.forEach(pallet => {
+    if (pallet.status === 'stored') {
+      const current = stockMap.get(pallet.materialId) || 0
+      stockMap.set(pallet.materialId, current + pallet.quantity)
+    }
+  })
+
+  mockMaterials.forEach(mat => {
+    const currentQty = stockMap.get(mat.id) || 0
+    if (currentQty < mat.safetyStock) {
+      alerts.push({
+        id: `dyn-low-${mat.id}`,
+        type: 'low_stock',
+        materialId: mat.id,
+        materialName: mat.name,
+        currentQty,
+        threshold: mat.safetyStock,
+        message: `${mat.name} 当前库存 ${currentQty} 件，低于安全库存 ${mat.safetyStock} 件`,
+        createTime: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' '),
+        status: 'active',
+      })
+    }
+    if (currentQty > mat.maxStock) {
+      alerts.push({
+        id: `dyn-high-${mat.id}`,
+        type: 'high_stock',
+        materialId: mat.id,
+        materialName: mat.name,
+        currentQty,
+        threshold: mat.maxStock,
+        message: `${mat.name} 当前库存 ${currentQty} 件，超过最大库存 ${mat.maxStock} 件`,
+        createTime: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' '),
+        status: 'active',
+      })
+    }
+  })
+
+  const now = Date.now()
+  state.pallets.forEach(pallet => {
+    if (pallet.status === 'stored') {
+      const inboundDate = new Date(pallet.inboundTime.replace(' ', 'T')).getTime()
+      const days = Math.floor((now - inboundDate) / (1000 * 60 * 60 * 24))
+      if (days > 60) {
+        alerts.push({
+          id: `dyn-obsolete-${pallet.id}`,
+          type: 'obsolete',
+          materialId: pallet.materialId,
+          materialName: pallet.materialName,
+          currentQty: pallet.quantity,
+          threshold: 60,
+          message: `${pallet.materialName} 已入库 ${days} 天，超过 60 天未出库，存在呆滞风险`,
+          createTime: pallet.inboundTime,
+          status: 'active',
+        })
+      }
+      if (pallet.expiryDate) {
+        const expiryDate = new Date(pallet.expiryDate).getTime()
+        const daysToExpiry = Math.floor((expiryDate - now) / (1000 * 60 * 60 * 24))
+        if (daysToExpiry < 30 && daysToExpiry > 0) {
+          alerts.push({
+            id: `dyn-expiry-${pallet.id}`,
+            type: 'expiry',
+            materialId: pallet.materialId,
+            materialName: pallet.materialName,
+            currentQty: pallet.quantity,
+            threshold: 30,
+            message: `${pallet.materialName} 将在 ${daysToExpiry} 天后过期（${pallet.expiryDate}）`,
+            createTime: pallet.inboundTime,
+            status: 'active',
+          })
+        }
+      }
+    }
+  })
+
+  return [...alerts, ...mockStockAlerts]
+}
+
+const initialStateWithoutAlerts: Omit<WarehouseState, 'alerts'> = {
   inboundOrders: [...mockInboundOrders],
   outboundOrders: [...mockOutboundOrders],
   pickingWaves: [...mockPickingWaves],
@@ -56,32 +141,45 @@ const initialState: WarehouseState = {
   inventoryRecords: [...mockInventoryRecords],
 }
 
+const initialState: WarehouseState = {
+  ...initialStateWithoutAlerts,
+  alerts: computeDynamicAlerts(initialStateWithoutAlerts),
+}
+
 function warehouseReducer(state: WarehouseState, action: Action): WarehouseState {
   switch (action.type) {
-    case 'UPDATE_INBOUND_ORDER':
-      return {
+    case 'UPDATE_INBOUND_ORDER': {
+      const newState = {
         ...state,
         inboundOrders: state.inboundOrders.map(o =>
           o.id === action.payload.id ? { ...o, ...action.payload } : o
         ),
       }
-    case 'ADD_INBOUND_ORDER':
-      return {
+      return { ...newState, alerts: computeDynamicAlerts(newState) }
+    }
+    case 'ADD_INBOUND_ORDER': {
+      const newState = {
         ...state,
         inboundOrders: [action.payload, ...state.inboundOrders],
       }
-    case 'UPDATE_OUTBOUND_ORDER':
-      return {
+      return { ...newState, alerts: computeDynamicAlerts(newState) }
+    }
+    case 'UPDATE_OUTBOUND_ORDER': {
+      const newState = {
         ...state,
         outboundOrders: state.outboundOrders.map(o =>
           o.id === action.payload.id ? { ...o, ...action.payload } : o
         ),
       }
-    case 'ADD_OUTBOUND_ORDER':
-      return {
+      return { ...newState, alerts: computeDynamicAlerts(newState) }
+    }
+    case 'ADD_OUTBOUND_ORDER': {
+      const newState = {
         ...state,
         outboundOrders: [action.payload, ...state.outboundOrders],
       }
+      return { ...newState, alerts: computeDynamicAlerts(newState) }
+    }
     case 'UPDATE_PICKING_WAVE':
       return {
         ...state,
@@ -147,30 +245,36 @@ function warehouseReducer(state: WarehouseState, action: Action): WarehouseState
         ),
       }
     }
-    case 'UPDATE_LOCATION':
-      return {
+    case 'UPDATE_LOCATION': {
+      const newState = {
         ...state,
         locations: state.locations.map(l =>
           l.id === action.payload.id ? { ...l, ...action.payload } : l
         ),
       }
-    case 'UPDATE_PALLET':
-      return {
+      return { ...newState, alerts: computeDynamicAlerts(newState) }
+    }
+    case 'UPDATE_PALLET': {
+      const newState = {
         ...state,
         pallets: state.pallets.map(p =>
           p.id === action.payload.id ? { ...p, ...action.payload } : p
         ),
       }
-    case 'ADD_PALLET':
-      return {
+      return { ...newState, alerts: computeDynamicAlerts(newState) }
+    }
+    case 'ADD_PALLET': {
+      const newState = {
         ...state,
         pallets: [action.payload, ...state.pallets],
       }
+      return { ...newState, alerts: computeDynamicAlerts(newState) }
+    }
     case 'BATCH_UPDATE_OUTBOUND_WAVE': {
       const ordersToUpdate = state.outboundOrders
         .filter(o => o.waveId === action.waveId && o.status === 'pending')
         .map(o => o.id)
-      return {
+      const newState = {
         ...state,
         pickingWaves: state.pickingWaves.map(w =>
           w.id === action.waveId ? { ...w, status: action.waveStatus } : w
@@ -179,16 +283,34 @@ function warehouseReducer(state: WarehouseState, action: Action): WarehouseState
           ordersToUpdate.includes(o.id) ? { ...o, status: action.orderStatus } : o
         ),
       }
+      return { ...newState, alerts: computeDynamicAlerts(newState) }
     }
     case 'ADD_TASK_LOG':
       return {
         ...state,
         taskLogs: [action.payload, ...state.taskLogs],
       }
-    case 'ADD_INVENTORY_RECORD':
-      return {
+    case 'ADD_INVENTORY_RECORD': {
+      const newState = {
         ...state,
         inventoryRecords: [action.payload, ...state.inventoryRecords],
+      }
+      return newState
+    }
+    case 'UPDATE_ALERT': {
+      const existingAlert = state.alerts.find(a => a.id === action.payload.id)
+      if (!existingAlert) return state
+      return {
+        ...state,
+        alerts: state.alerts.map(a =>
+          a.id === action.payload.id ? { ...a, ...action.payload } : a
+        ),
+      }
+    }
+    case 'REFRESH_ALERTS':
+      return {
+        ...state,
+        alerts: action.payload,
       }
     default:
       return state
@@ -229,4 +351,28 @@ export function getMaterialStock(state: WarehouseState, materialId: string): num
   return state.pallets
     .filter(p => p.materialId === materialId && p.status === 'stored')
     .reduce((sum, p) => sum + (p.quantity || 0), 0)
+}
+
+export function getDeduplicatedInboundQty(records: InventoryRecord[]): number {
+  const seen = new Set<string>()
+  return records
+    .filter(r => r.type === 'inbound')
+    .filter(r => {
+      if (r.orderCode && seen.has(r.orderCode)) return false
+      if (r.orderCode) seen.add(r.orderCode)
+      return true
+    })
+    .reduce((sum, r) => sum + r.quantity, 0)
+}
+
+export function getDeduplicatedOutboundQty(records: InventoryRecord[]): number {
+  const seen = new Set<string>()
+  return records
+    .filter(r => r.type === 'outbound')
+    .filter(r => {
+      if (r.orderCode && seen.has(r.orderCode)) return false
+      if (r.orderCode) seen.add(r.orderCode)
+      return true
+    })
+    .reduce((sum, r) => sum + r.quantity, 0)
 }

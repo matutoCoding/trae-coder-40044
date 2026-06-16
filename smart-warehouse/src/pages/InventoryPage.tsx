@@ -4,7 +4,7 @@ import {
   Search, Filter, Clock, User, MapPin, FileText,
   AlertTriangle, CheckCircle, ArrowRight
 } from 'lucide-react'
-import { useWarehouse } from '@/context/WarehouseContext'
+import { useWarehouse, getDeduplicatedInboundQty, getDeduplicatedOutboundQty } from '@/context/WarehouseContext'
 import { mockMaterials } from '@/data/mockData'
 import { statusColors, statusLabels } from '@/utils'
 import type { InventoryRecord, Material } from '@/types'
@@ -24,16 +24,12 @@ export default function InventoryPage() {
   const [searchText, setSearchText] = useState('')
 
   const totalInbound = useMemo(() =>
-    state.inventoryRecords
-      .filter(r => r.type === 'inbound')
-      .reduce((sum, r) => sum + r.quantity, 0),
+    getDeduplicatedInboundQty(state.inventoryRecords),
     [state.inventoryRecords]
   )
 
   const totalOutbound = useMemo(() =>
-    state.inventoryRecords
-      .filter(r => r.type === 'outbound')
-      .reduce((sum, r) => sum + r.quantity, 0),
+    getDeduplicatedOutboundQty(state.inventoryRecords),
     [state.inventoryRecords]
   )
 

@@ -138,29 +138,9 @@ export default function InboundPage() {
   const handleConfirmScan = () => {
     if (!scanResult || scanResult.type === 'material' || scanResult.error) return
 
-    const beforeQty = getMaterialStock(state, scanResult.materialId)
-
     dispatch({
       type: 'UPDATE_INBOUND_ORDER',
       payload: { id: scanResult.id, status: 'allocating' }
-    })
-
-    dispatch({
-      type: 'ADD_INVENTORY_RECORD',
-      payload: {
-        id: generateId('IR'),
-        type: 'inbound',
-        materialId: scanResult.materialId,
-        materialName: scanResult.materialName,
-        quantity: scanResult.quantity,
-        beforeQty,
-        afterQty: beforeQty + scanResult.quantity,
-        palletCode: scanResult.palletCode,
-        orderCode: scanResult.code,
-        operator: '当前操作员',
-        timestamp: getNowTime(),
-        remark: '扫码确认入库'
-      }
     })
 
     setActiveOrderId(scanResult.id)
@@ -642,7 +622,7 @@ export default function InboundPage() {
                     <li>• 支持扫描入库单号、托盘条码、物料编码</li>
                     <li>• 扫码成功后系统自动校验物料信息</li>
                     <li>• 校验通过后进入智能货位分配环节</li>
-                    <li>• 扫码确认后自动记录库存台账</li>
+                    <li>• 货位分配完成后自动记录库存台账</li>
                   </ul>
                 </div>
               </div>

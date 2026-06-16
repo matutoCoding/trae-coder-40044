@@ -136,30 +136,6 @@ export default function OutboundPage() {
   }
 
   const handleFinishPicking = (orderId: string) => {
-    const order = state.outboundOrders.find(o => o.id === orderId)
-    if (!order) return
-
-    const beforeQty = getMaterialStock(state, order.materialId)
-    const afterQty = Math.max(0, beforeQty - order.quantity)
-
-    dispatch({
-      type: 'ADD_INVENTORY_RECORD',
-      payload: {
-        id: generateId('IR'),
-        type: 'outbound',
-        materialId: order.materialId,
-        materialName: order.materialName,
-        quantity: order.quantity,
-        beforeQty,
-        afterQty,
-        palletCode: order.palletCodes?.[0],
-        orderCode: order.code,
-        operator: order.operator || 'currentUser',
-        timestamp: getNowTime(),
-        remark: '拣选完成'
-      }
-    })
-
     dispatch({ type: 'UPDATE_OUTBOUND_ORDER', payload: { id: orderId, status: 'reviewing' } })
   }
 

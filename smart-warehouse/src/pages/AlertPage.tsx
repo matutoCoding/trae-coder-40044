@@ -1,18 +1,17 @@
-import { useState, useMemo } from 'react'
+import { useState } from 'react'
 import {
   AlertTriangle, Search, Bell,
   TrendingDown, TrendingUp, AlertCircle, Package, CalendarDays, RefreshCw, Filter,
   Clock, CheckCircle, XCircle
 } from 'lucide-react'
 import { useWarehouse } from '@/context/WarehouseContext'
-import { mockStockAlerts, mockMaterials } from '@/data/mockData'
 import { statusColors, statusLabels } from '@/utils'
 import type { StockAlert } from '@/types'
 
 type TabType = 'all' | 'low' | 'high' | 'obsolete' | 'expiry'
 
 export default function AlertPage() {
-  const { state } = useWarehouse()
+  const { state, dispatch } = useWarehouse()
   const [tab, setTab] = useState<TabType>('all')
   const [searchText, setSearchText] = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
@@ -25,108 +24,24 @@ export default function AlertPage() {
     expiry: 'expiry',
   }
 
-  const materialStockMap = useMemo(() => {
-    const map = new Map<string, number>()
-    state.pallets.forEach(pallet => {
-      if (pallet.status === 'stored') {
-        const current = map.get(pallet.materialId) || 0
-        map.set(pallet.materialId, current + pallet.quantity)
-      }
-    })
-    return map
-  }, [state.pallets])
-
-  const dynamicAlerts = useMemo(() => {
-    const alerts: StockAlert[] = []
-    mockMaterials.forEach(mat => {
-      const currentQty = materialStockMap.get(mat.id) || 0
-      if (currentQty < mat.safetyStock) {
-        alerts.push({
-          id: `dyn-low-${mat.id}`,
-          type: 'low_stock',
-          materialId: mat.id,
-          materialName: mat.name,
-          currentQty,
-          threshold: mat.safetyStock,
-          message: `${mat.name} 当前库存 ${currentQty} 件，低于安全库存 ${mat.safetyStock} 件`,
-          createTime: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' '),
-          status: 'active',
-        })
-      }
-      if (currentQty > mat.maxStock) {
-        alerts.push({
-          id: `dyn-high-${mat.id}`,
-          type: 'high_stock',
-          materialId: mat.id,
-          materialName: mat.name,
-          currentQty,
-          threshold: mat.maxStock,
-          message: `${mat.name} 当前库存 ${currentQty} 件，超过最大库存 ${mat.maxStock} 件`,
-          createTime: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' '),
-          status: 'active',
-        })
-      }
-    })
-
-    const now = Date.now()
-    state.pallets.forEach(pallet => {
-      if (pallet.status === 'stored') {
-        const inboundDate = new Date(pallet.inboundTime.replace(' ', 'T')).getTime()
-        const days = Math.floor((now - inboundDate) / (1000 * 60 * 60 * 24))
-        if (days > 60) {
-          alerts.push({
-            id: `dyn-obsolete-${pallet.id}`,
-            type: 'obsolete',
-            materialId: pallet.materialId,
-            materialName: pallet.materialName,
-            currentQty: pallet.quantity,
-            threshold: 60,
-            message: `${pallet.materialName} 已入库 ${days} 天，超过 60 天未出库，存在呆滞风险`,
-            createTime: pallet.inboundTime,
-            status: 'active',
-          })
-        }
-        if (pallet.expiryDate) {
-          const expiryDate = new Date(pallet.expiryDate).getTime()
-          const daysToExpiry = Math.floor((expiryDate - now) / (1000 * 60 * 60 * 24))
-          if (daysToExpiry < 30 && daysToExpiry > 0) {
-            alerts.push({
-              id: `dyn-expiry-${pallet.id}`,
-              type: 'expiry',
-              materialId: pallet.materialId,
-              materialName: pallet.materialName,
-              currentQty: pallet.quantity,
-              threshold: 30,
-              message: `${pallet.materialName} 将在 ${daysToExpiry} 天后过期（${pallet.expiryDate}）`,
-              createTime: pallet.inboundTime,
-              status: 'active',
-            })
-          }
-        }
-      }
-    })
-
-    return [...alerts, ...mockStockAlerts]
-  }, [materialStockMap, state.pallets])
-
-  const filteredAlerts = dynamicAlerts.filter(a => {
+  const filteredAlerts = state.alerts.filter(a => {
     if (filterMap[tab] && a.type !== filterMap[tab]) return false
     if (searchText && !a.materialName.includes(searchText)) return false
     if (statusFilter !== 'all' && a.status !== statusFilter) return false
     return true
   })
 
-  const activeCount = dynamicAlerts.filter(a => a.status === 'active').length
-  const lowStockCount = dynamicAlerts.filter(a => a.type === 'low_stock' && a.status === 'active').length
-  const highStockCount = dynamicAlerts.filter(a => a.type === 'high_stock' && a.status === 'active').length
-  const obsoleteCount = dynamicAlerts.filter(a => a.type === 'obsolete' && a.status === 'active').length
-  const expiryCount = dynamicAlerts.filter(a => a.type === 'expiry' && a.status === 'active').length
+  const activeCount = state.alerts.filter(a => a.status === 'active').length
+  const lowStockCount = state.alerts.filter(a => a.type === 'low_stock' && a.status === 'active').length
+  const highStockCount = state.alerts.filter(a => a.type === 'high_stock' && a.status === 'active').length
+  const obsoleteCount = state.alerts.filter(a => a.type === 'obsolete' && a.status === 'active').length
+  const expiryCount = state.alerts.filter(a => a.type === 'expiry' && a.status === 'active').length
 
   const handleAlertStatus = (alertId: string, newStatus: 'handled' | 'ignored') => {
-    const alertIndex = dynamicAlerts.findIndex(a => a.id === alertId)
-    if (alertIndex >= 0) {
-      dynamicAlerts[alertIndex].status = newStatus
-    }
+    dispatch({
+      type: 'UPDATE_ALERT',
+      payload: { id: alertId, status: newStatus }
+    })
   }
 
   const tabs: { id: TabType; name: string; count: number; color: string }[] = [
@@ -249,7 +164,7 @@ export default function AlertPage() {
         </div>
 
         <div className="space-y-3">
-          {filteredAlerts.map(function(alert) {
+          {filteredAlerts.map(function(alert: StockAlert) {
             return (
               <div key={alert.id} className={`p-4 rounded-lg border ${
                 alert.status === 'active' ? 'border-red-100 bg-red-50' :

@@ -5,7 +5,7 @@ import {
 } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
 import { useWarehouse } from '@/context/WarehouseContext'
-import { mockStockAlerts, mockMaterials } from '@/data/mockData'
+import { mockMaterials } from '@/data/mockData'
 import { statusLabels, statusColors } from '@/utils'
 
 const weeklyData = [
@@ -23,7 +23,7 @@ export default function Dashboard() {
 
   const recentInbounds = state.inboundOrders.slice(0, 5)
   const recentOutbounds = state.outboundOrders.slice(0, 5)
-  const activeAlerts = mockStockAlerts.filter(a => a.status === 'active').slice(0, 5)
+  const activeAlerts = state.alerts.filter(a => a.status === 'active').slice(0, 5)
 
   const occupancyRate = useMemo(() =>
     Math.round((state.locations.filter(l => l.status === 'occupied' || l.status === 'reserved').length / state.locations.length) * 100),
