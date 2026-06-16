@@ -1,32 +1,63 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import {
   QrCode, Search, Plus, Package, MapPin, CheckCircle2,
   Clock, FileText, ArrowRight, RefreshCw
 } from 'lucide-react'
-import { mockInboundOrders, mockMaterials, mockLocations } from '@/data/mockData'
+import { useWarehouse } from '@/context/WarehouseContext'
+import { mockMaterials } from '@/data/mockData'
 import { statusColors, statusLabels } from '@/utils'
+import type { InboundOrder, Location } from '@/types'
 
 type TabType = 'orders' | 'scan' | 'allocate'
 
 export default function InboundPage() {
+  const { state, dispatch } = useWarehouse()
   const [tab, setTab] = useState<TabType>('orders')
   const [searchText, setSearchText] = useState('')
   const [scanCode, setScanCode] = useState('')
   const [scanResult, setScanResult] = useState<any>(null)
   const [filterStatus, setFilterStatus] = useState<string>('all')
+  const [activeOrderId, setActiveOrderId] = useState<string | null>(null)
+  const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null)
+  const [allocateSuccess, setAllocateSuccess] = useState(false)
 
-  const filteredOrders = mockInboundOrders.filter(o => {
+  const activeOrder: InboundOrder | undefined = useMemo(() => {
+    if (activeOrderId) return state.inboundOrders.find(o => o.id === activeOrderId)
+    return undefined
+  }, [activeOrderId, state.inboundOrders])
+
+  const filteredOrders = state.inboundOrders.filter(o => {
     if (searchText && !o.code.includes(searchText) && !o.materialName.includes(searchText)) return false
     if (filterStatus !== 'all' && o.status !== filterStatus) return false
     return true
   })
 
+  const emptyLocations = useMemo(() =>
+    state.locations.filter(l => l.status === 'empty').slice(0, 10),
+    [state.locations]
+  )
+
+  const reservedLocations = useMemo(() =>
+    state.locations.filter(l => l.status === 'reserved'),
+    [state.locations]
+  )
+
+  const recommendedLocation: Location | undefined = useMemo(() => {
+    if (selectedLocationId) return state.locations.find(l => l.id === selectedLocationId)
+    return emptyLocations[0]
+  }, [emptyLocations, selectedLocationId, state.locations])
+
   const handleScan = () => {
-    const order = mockInboundOrders.find(o => o.code === scanCode || o.palletCode === scanCode)
+    const trimmed = scanCode.trim()
+    if (!trimmed) return
+    const order = state.inboundOrders.find(o =>
+      o.code.toUpperCase() === trimmed.toUpperCase() ||
+      (o.palletCode && o.palletCode.toUpperCase() === trimmed.toUpperCase())
+    )
     if (order) {
       setScanResult(order)
     } else {
-      const material = mockMaterials.find(m => m.code === scanCode)
+      const material = mockMaterials.find(m => m.code.toUpperCase() === trimmed.toUpperCase())
       if (material) {
         setScanResult({ type: 'material', ...material })
       } else {
@@ -35,8 +66,56 @@ export default function InboundPage() {
     }
   }
 
-  const emptyLocations = mockLocations.filter(l => l.status === 'empty').slice(0, 10)
-  const recommendedLocation = emptyLocations[0]
+  const handleConfirmScan = () => {
+    if (!scanResult || scanResult.type === 'material' || scanResult.error) return
+    dispatch({
+      type: 'UPDATE_INBOUND_ORDER',
+      payload: { id: scanResult.id, status: 'allocating' }
+    })
+    setActiveOrderId(scanResult.id)
+    setScanResult(null)
+    setScanCode('')
+    setTab('allocate')
+  }
+
+  const handleConfirmAllocate = () => {
+    if (!activeOrder || !recommendedLocation) return
+    dispatch({
+      type: 'UPDATE_INBOUND_ORDER',
+      payload: { id: activeOrder.id, status: 'stacking', locationId: recommendedLocation.id, locationCode: recommendedLocation.code }
+    })
+    dispatch({
+      type: 'UPDATE_LOCATION',
+      payload: { id: recommendedLocation.id, status: 'reserved', palletCode: activeOrder.palletCode }
+    })
+    if (activeOrder.palletCode) {
+      const pallet = state.pallets.find(p => p.code === activeOrder.palletCode)
+      if (pallet) {
+        dispatch({
+          type: 'UPDATE_PALLET',
+          payload: { id: pallet.id, status: 'stacking', locationCode: recommendedLocation.code }
+        })
+      }
+    }
+    setSelectedLocationId(null)
+    setAllocateSuccess(true)
+    setTimeout(() => {
+      setAllocateSuccess(false)
+      setActiveOrderId(null)
+      setTab('orders')
+    }, 2000)
+  }
+
+  const handlePickLocation = (locId: string) => {
+    setSelectedLocationId(locId)
+  }
+
+  const stats = {
+    total: state.inboundOrders.length,
+    pending: state.inboundOrders.filter(o => o.status === 'pending').length,
+    stacking: state.inboundOrders.filter(o => o.status === 'stacking').length,
+    completed: state.inboundOrders.filter(o => o.status === 'completed').length,
+  }
 
   return (
     <div className="space-y-6">
@@ -45,7 +124,7 @@ export default function InboundPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-gray-500">今日入库单</p>
-              <p className="text-2xl font-bold text-gray-800 mt-1">{mockInboundOrders.length}</p>
+              <p className="text-2xl font-bold text-gray-800 mt-1">{stats.total}</p>
             </div>
             <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center">
               <FileText className="w-6 h-6 text-blue-600" />
@@ -56,7 +135,7 @@ export default function InboundPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-gray-500">待扫码</p>
-              <p className="text-2xl font-bold text-amber-600 mt-1">{mockInboundOrders.filter(o => o.status === 'pending').length}</p>
+              <p className="text-2xl font-bold text-amber-600 mt-1">{stats.pending}</p>
             </div>
             <div className="w-12 h-12 bg-amber-100 rounded-xl flex items-center justify-center">
               <QrCode className="w-6 h-6 text-amber-600" />
@@ -67,7 +146,7 @@ export default function InboundPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-gray-500">上架中</p>
-              <p className="text-2xl font-bold text-purple-600 mt-1">{mockInboundOrders.filter(o => o.status === 'stacking').length}</p>
+              <p className="text-2xl font-bold text-purple-600 mt-1">{stats.stacking}</p>
             </div>
             <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">
               <Package className="w-6 h-6 text-purple-600" />
@@ -78,7 +157,7 @@ export default function InboundPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-gray-500">已完成</p>
-              <p className="text-2xl font-bold text-green-600 mt-1">{mockInboundOrders.filter(o => o.status === 'completed').length}</p>
+              <p className="text-2xl font-bold text-green-600 mt-1">{stats.completed}</p>
             </div>
             <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
               <CheckCircle2 className="w-6 h-6 text-green-600" />
@@ -160,6 +239,7 @@ export default function InboundPage() {
                       <th className="px-4 py-3 font-medium">托盘号</th>
                       <th className="px-4 py-3 font-medium">供应商</th>
                       <th className="px-4 py-3 font-medium">操作员</th>
+                      <th className="px-4 py-3 font-medium">货位</th>
                       <th className="px-4 py-3 font-medium">创建时间</th>
                       <th className="px-4 py-3 font-medium">状态</th>
                       <th className="px-4 py-3 font-medium">操作</th>
@@ -174,6 +254,7 @@ export default function InboundPage() {
                         <td className="px-4 py-3 text-sm text-gray-600 font-mono">{order.palletCode}</td>
                         <td className="px-4 py-3 text-sm text-gray-600">{order.supplier}</td>
                         <td className="px-4 py-3 text-sm text-gray-600">{order.operator}</td>
+                        <td className="px-4 py-3 text-sm text-gray-600 font-mono">{order.locationCode || '-'}</td>
                         <td className="px-4 py-3 text-sm text-gray-500">{order.createTime}</td>
                         <td className="px-4 py-3">
                           <span className={`text-xs px-2 py-1 rounded-full ${statusColors[order.status]}`}>
@@ -183,13 +264,28 @@ export default function InboundPage() {
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
                             {order.status === 'pending' && (
-                              <button className="text-xs px-2 py-1 text-blue-600 bg-blue-50 rounded hover:bg-blue-100">扫码</button>
+                              <button
+                                onClick={() => { setScanCode(order.code); setTab('scan'); }}
+                                className="text-xs px-2 py-1 text-blue-600 bg-blue-50 rounded hover:bg-blue-100"
+                              >
+                                扫码
+                              </button>
                             )}
                             {order.status === 'scanning' && (
-                              <button className="text-xs px-2 py-1 text-purple-600 bg-purple-50 rounded hover:bg-purple-100">分配货位</button>
+                              <button
+                                onClick={() => { setActiveOrderId(order.id); setTab('allocate'); }}
+                                className="text-xs px-2 py-1 text-purple-600 bg-purple-50 rounded hover:bg-purple-100"
+                              >
+                                分配货位
+                              </button>
                             )}
                             {(order.status === 'allocating' || order.status === 'stacking') && (
-                              <button className="text-xs px-2 py-1 text-green-600 bg-green-50 rounded hover:bg-green-100">查看进度</button>
+                              <button
+                                onClick={() => { setActiveOrderId(order.id); setTab('allocate'); }}
+                                className="text-xs px-2 py-1 text-green-600 bg-green-50 rounded hover:bg-green-100"
+                              >
+                                查看进度
+                              </button>
                             )}
                             <button className="text-xs px-2 py-1 text-gray-600 hover:bg-gray-100 rounded">详情</button>
                           </div>
@@ -221,7 +317,7 @@ export default function InboundPage() {
                       value={scanCode}
                       onChange={(e) => setScanCode(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleScan()}
-                      placeholder="请扫描或输入条码，例如：IN2024001"
+                      placeholder="请扫描或输入条码，例如：IN2024001 / PLT0001"
                       className="flex-1 px-4 py-3 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     />
                     <button
@@ -276,8 +372,20 @@ export default function InboundPage() {
                           )}
                         </div>
                         {!scanResult.type && (scanResult.status === 'pending' || scanResult.status === 'scanning') && (
-                          <button className="mt-4 w-full py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 flex items-center justify-center gap-2">
+                          <button
+                            onClick={handleConfirmScan}
+                            className="mt-4 w-full py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 flex items-center justify-center gap-2"
+                          >
                             确认扫码信息，进入货位分配
+                            <ArrowRight className="w-4 h-4" />
+                          </button>
+                        )}
+                        {!scanResult.type && (scanResult.status === 'allocating' || scanResult.status === 'stacking') && (
+                          <button
+                            onClick={() => { setActiveOrderId(scanResult.id); setTab('allocate'); setScanResult(null); setScanCode(''); }}
+                            className="mt-4 w-full py-2.5 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 flex items-center justify-center gap-2"
+                          >
+                            查看当前分配进度
                             <ArrowRight className="w-4 h-4" />
                           </button>
                         )}
@@ -300,37 +408,79 @@ export default function InboundPage() {
 
           {tab === 'allocate' && (
             <div>
+              {allocateSuccess && (
+                <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-xl flex items-center gap-3">
+                  <CheckCircle2 className="w-6 h-6 text-green-600" />
+                  <div>
+                    <div className="font-medium text-green-800">货位分配成功</div>
+                    <div className="text-sm text-green-600">入库单已切换为上架中，推荐货位已预留</div>
+                  </div>
+                </div>
+              )}
+
+              {activeOrder && (
+                <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-xl">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xs text-blue-600 font-medium">当前分配入库单</div>
+                      <div className="text-sm font-semibold text-gray-800 mt-1">
+                        {activeOrder.code} · {activeOrder.materialName} · {activeOrder.quantity}件 · 托盘 {activeOrder.palletCode}
+                      </div>
+                    </div>
+                    <span className={`text-xs px-3 py-1 rounded-full ${statusColors[activeOrder.status]}`}>
+                      {statusLabels[activeOrder.status]}
+                    </span>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-2">
                   <h4 className="font-semibold text-gray-800 mb-4">智能分配推荐货位</h4>
-                  <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-5 border border-blue-100 mb-4">
-                    <div className="flex items-center justify-between mb-4">
-                      <div>
-                        <span className="text-xs text-blue-600 bg-blue-100 px-2 py-0.5 rounded">系统推荐</span>
-                        <h5 className="text-lg font-semibold text-gray-800 mt-2">最佳货位: {recommendedLocation?.code}</h5>
-                        <p className="text-sm text-gray-500 mt-1">
-                          {recommendedLocation?.category || '通用区'} · 巷道 {recommendedLocation?.aisle} · 列 {recommendedLocation?.column} · 层 {recommendedLocation?.layer}
-                        </p>
+                  {recommendedLocation ? (
+                    <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-5 border border-blue-100 mb-4">
+                      <div className="flex items-center justify-between mb-4">
+                        <div>
+                          <span className="text-xs text-blue-600 bg-blue-100 px-2 py-0.5 rounded">系统推荐</span>
+                          <h5 className="text-lg font-semibold text-gray-800 mt-2">最佳货位: {recommendedLocation.code}</h5>
+                          <p className="text-sm text-gray-500 mt-1">
+                            {recommendedLocation.category || '通用区'} · 巷道 {recommendedLocation.aisle} · 列 {recommendedLocation.column} · 层 {recommendedLocation.layer}
+                          </p>
+                        </div>
+                        {activeOrder && activeOrder.status !== 'completed' && activeOrder.status !== 'stacking' && (
+                          <button
+                            onClick={handleConfirmAllocate}
+                            className="px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                          >
+                            确认分配
+                          </button>
+                        )}
+                        {activeOrder?.status === 'stacking' && (
+                          <span className="px-5 py-2.5 text-sm font-medium text-purple-700 bg-purple-100 rounded-lg flex items-center gap-1">
+                            <Clock className="w-4 h-4" /> 上架中
+                          </span>
+                        )}
                       </div>
-                      <button className="px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700">
-                        确认分配
-                      </button>
+                      <div className="grid grid-cols-3 gap-3">
+                        <div className="bg-white/70 rounded-lg p-3">
+                          <span className="text-xs text-gray-500">分配策略</span>
+                          <p className="text-sm font-medium text-gray-800 mt-1">先进先出 + 同类聚集</p>
+                        </div>
+                        <div className="bg-white/70 rounded-lg p-3">
+                          <span className="text-xs text-gray-500">搬运距离</span>
+                          <p className="text-sm font-medium text-gray-800 mt-1">最短路径 25m</p>
+                        </div>
+                        <div className="bg-white/70 rounded-lg p-3">
+                          <span className="text-xs text-gray-500">容量利用率</span>
+                          <p className="text-sm font-medium text-gray-800 mt-1">预计 45%</p>
+                        </div>
+                      </div>
                     </div>
-                    <div className="grid grid-cols-3 gap-3">
-                      <div className="bg-white/70 rounded-lg p-3">
-                        <span className="text-xs text-gray-500">分配策略</span>
-                        <p className="text-sm font-medium text-gray-800 mt-1">先进先出 + 同类聚集</p>
-                      </div>
-                      <div className="bg-white/70 rounded-lg p-3">
-                        <span className="text-xs text-gray-500">搬运距离</span>
-                        <p className="text-sm font-medium text-gray-800 mt-1">最短路径 25m</p>
-                      </div>
-                      <div className="bg-white/70 rounded-lg p-3">
-                        <span className="text-xs text-gray-500">容量利用率</span>
-                        <p className="text-sm font-medium text-gray-800 mt-1">预计 45%</p>
-                      </div>
+                  ) : (
+                    <div className="p-8 text-center text-gray-400 bg-gray-50 border border-gray-200 rounded-xl mb-4">
+                      暂无可用空货位
                     </div>
-                  </div>
+                  )}
 
                   <h4 className="font-semibold text-gray-800 mb-3">可选货位列表</h4>
                   <div className="overflow-x-auto">
@@ -346,8 +496,27 @@ export default function InboundPage() {
                         </tr>
                       </thead>
                       <tbody>
+                        {reservedLocations.map((loc) => (
+                          <tr key={loc.id} className="border-b border-amber-50 bg-amber-50/50 hover:bg-amber-50">
+                            <td className="px-4 py-3 text-sm font-mono font-medium text-amber-700">{loc.code}</td>
+                            <td className="px-4 py-3 text-sm text-gray-600">A{loc.aisle}巷 C{loc.column}列 L{loc.layer}层</td>
+                            <td className="px-4 py-3 text-sm text-gray-600">{loc.category || '通用'}</td>
+                            <td className="px-4 py-3 text-sm text-gray-600">{loc.capacity}</td>
+                            <td className="px-4 py-3">
+                              <span className={`text-xs px-2 py-1 rounded-full ${statusColors[loc.status]}`}>
+                                {statusLabels[loc.status]} ({loc.palletCode})
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className="text-xs text-gray-400">已预留</span>
+                            </td>
+                          </tr>
+                        ))}
                         {emptyLocations.map((loc) => (
-                          <tr key={loc.id} className="border-b border-gray-50 hover:bg-gray-50">
+                          <tr
+                            key={loc.id}
+                            className={`border-b border-gray-50 hover:bg-gray-50 ${selectedLocationId === loc.id ? 'bg-blue-50' : ''}`}
+                          >
                             <td className="px-4 py-3 text-sm font-mono font-medium text-blue-600">{loc.code}</td>
                             <td className="px-4 py-3 text-sm text-gray-600">A{loc.aisle}巷 C{loc.column}列 L{loc.layer}层</td>
                             <td className="px-4 py-3 text-sm text-gray-600">{loc.category || '通用'}</td>
@@ -358,7 +527,12 @@ export default function InboundPage() {
                               </span>
                             </td>
                             <td className="px-4 py-3">
-                              <button className="text-xs px-3 py-1 text-blue-600 bg-blue-50 rounded hover:bg-blue-100">选择</button>
+                              <button
+                                onClick={() => handlePickLocation(loc.id)}
+                                className={`text-xs px-3 py-1 rounded ${selectedLocationId === loc.id ? 'text-white bg-blue-600' : 'text-blue-600 bg-blue-50 hover:bg-blue-100'}`}
+                              >
+                                {selectedLocationId === loc.id ? '已选' : '选择'}
+                              </button>
                             </td>
                           </tr>
                         ))}
@@ -375,20 +549,20 @@ export default function InboundPage() {
                         <div key={layer} className="flex gap-1">
                           <span className="w-8 text-xs text-gray-400 flex items-center">L{5 - layer}</span>
                           {Array.from({ length: 8 }, (_, col) => {
-                            const filled = Math.random() > 0.3
+                            const targetCode = `A1-C${String(col + 1).padStart(2, '0')}-L${5 - layer}`
+                            const found = state.locations.find(l => l.code === targetCode)
+                            let status = 'empty'
+                            if (found) status = found.status
+                            let bg = '#374151'
+                            if (status === 'occupied') bg = 'rgba(59, 130, 246, 0.85)'
+                            else if (status === 'reserved') bg = 'rgba(245, 158, 11, 0.85)'
+                            else if (status === 'maintenance') bg = 'rgba(239, 68, 68, 0.7)'
                             return (
                               <div
                                 key={col}
-                                className={`flex-1 h-6 rounded-sm ${
-                                  filled
-                                    ? `bg-blue-${400 + Math.floor(Math.random() * 3) * 100}`
-                                    : 'bg-gray-700'
-                                }`}
-                                style={{
-                                  backgroundColor: filled
-                                    ? `rgba(59, 130, 246, ${0.4 + Math.random() * 0.6})`
-                                    : '#374151'
-                                }}
+                                className="flex-1 h-6 rounded-sm"
+                                style={{ backgroundColor: bg }}
+                                title={`${targetCode} - ${status}`}
                               />
                             )
                           })}
@@ -409,12 +583,12 @@ export default function InboundPage() {
                           <span className="text-gray-400">空</span>
                         </div>
                         <div className="flex items-center gap-1">
-                          <div className="w-3 h-3 bg-blue-500/50 rounded-sm"></div>
-                          <span className="text-gray-400">占用中</span>
+                          <div className="w-3 h-3 bg-amber-500 rounded-sm"></div>
+                          <span className="text-gray-400">预留</span>
                         </div>
                         <div className="flex items-center gap-1">
                           <div className="w-3 h-3 bg-blue-500 rounded-sm"></div>
-                          <span className="text-gray-400">满载</span>
+                          <span className="text-gray-400">占用</span>
                         </div>
                       </div>
                     </div>

@@ -1,21 +1,74 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import {
   Bot, Play, Pause, AlertTriangle, CheckCircle2,
   Search, ArrowRightLeft, Package, Truck, FileText, RefreshCw
 } from 'lucide-react'
-import { mockStackers, mockStackerTasks, mockLocations } from '@/data/mockData'
+import { useWarehouse } from '@/context/WarehouseContext'
+import { mockLocations } from '@/data/mockData'
 import { statusColors, statusLabels } from '@/utils'
 
 type TabType = 'overview' | 'tasks' | 'control'
 
 export default function StackerPage() {
+  const { state, dispatch } = useWarehouse()
   const [tab, setTab] = useState<TabType>('overview')
   const [selectedStacker, setSelectedStacker] = useState<string | null>(null)
 
-  const runningCount = mockStackers.filter(s => s.status === 'running').length
-  const faultCount = mockStackers.filter(s => s.status === 'fault').length
+  const stats = useMemo(() => ({
+    total: state.stackers.length,
+    running: state.stackers.filter(s => s.status === 'running').length,
+    pendingTasks: state.stackerTasks.filter(t => t.status === 'pending').length,
+    fault: state.stackers.filter(s => s.status === 'fault').length,
+  }), [state.stackers, state.stackerTasks])
 
-  const pendingTasks = mockStackerTasks.filter(t => t.status === 'pending').length
+  const executingTasks = useMemo(
+    () => state.stackerTasks.filter(t => t.status === 'executing'),
+    [state.stackerTasks]
+  )
+
+  const handleExecuteTask = (taskId: string) => {
+    const task = state.stackerTasks.find(t => t.id === taskId)
+    if (!task) return
+    dispatch({ type: 'UPDATE_STACKER_TASK', payload: { id: taskId, status: 'executing', startTime: new Date().toISOString().slice(0, 16).replace('T', ' ') } })
+    dispatch({ type: 'UPDATE_STACKER', payload: { id: task.stackerId, status: 'running', currentTask: task.code } })
+  }
+
+  const handleCancelTask = (taskId: string) => {
+    const task = state.stackerTasks.find(t => t.id === taskId)
+    if (!task) return
+    dispatch({ type: 'UPDATE_STACKER_TASK', payload: { id: taskId, status: 'failed', endTime: new Date().toISOString().slice(0, 16).replace('T', ' ') } })
+    const stillExecuting = state.stackerTasks.some(t => t.stackerId === task.stackerId && t.status === 'executing' && t.id !== taskId)
+    if (!stillExecuting) {
+      dispatch({ type: 'UPDATE_STACKER', payload: { id: task.stackerId, status: 'idle', currentTask: undefined } })
+    }
+  }
+
+  const handlePauseTask = (taskId: string) => {
+    const task = state.stackerTasks.find(t => t.id === taskId)
+    if (!task) return
+    dispatch({ type: 'UPDATE_STACKER_TASK', payload: { id: taskId, status: 'pending' } })
+    const stillExecuting = state.stackerTasks.some(t => t.stackerId === task.stackerId && t.status === 'executing' && t.id !== taskId)
+    if (!stillExecuting) {
+      dispatch({ type: 'UPDATE_STACKER', payload: { id: task.stackerId, status: 'idle' } })
+    }
+  }
+
+  const handleCompleteTask = (taskId: string) => {
+    const task = state.stackerTasks.find(t => t.id === taskId)
+    if (!task) return
+    dispatch({ type: 'UPDATE_STACKER_TASK', payload: { id: taskId, status: 'completed', endTime: new Date().toISOString().slice(0, 16).replace('T', ' ') } })
+    const stillExecuting = state.stackerTasks.some(t => t.stackerId === task.stackerId && t.status === 'executing' && t.id !== taskId)
+    const stacker = state.stackers.find(s => s.id === task.stackerId)
+    dispatch({
+      type: 'UPDATE_STACKER',
+      payload: {
+        id: task.stackerId,
+        status: stillExecuting ? 'running' : 'idle',
+        currentTask: stillExecuting ? stacker?.currentTask : undefined,
+        completedTasks: (stacker?.completedTasks || 0) + 1
+      }
+    })
+  }
 
   return (
     <div className="space-y-6">
@@ -24,7 +77,7 @@ export default function StackerPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-gray-500">堆垛机总数</p>
-              <p className="text-2xl font-bold text-gray-800 mt-1">{mockStackers.length}</p>
+              <p className="text-2xl font-bold text-gray-800 mt-1">{stats.total}</p>
             </div>
             <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center">
               <Bot className="w-6 h-6 text-blue-600" />
@@ -35,7 +88,7 @@ export default function StackerPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-gray-500">运行中</p>
-              <p className="text-2xl font-bold text-green-600 mt-1">{runningCount}</p>
+              <p className="text-2xl font-bold text-green-600 mt-1">{stats.running}</p>
             </div>
             <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
               <Play className="w-6 h-6 text-green-600" />
@@ -46,7 +99,7 @@ export default function StackerPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-gray-500">待执行任务</p>
-              <p className="text-2xl font-bold text-amber-600 mt-1">{pendingTasks}</p>
+              <p className="text-2xl font-bold text-amber-600 mt-1">{stats.pendingTasks}</p>
             </div>
             <div className="w-12 h-12 bg-amber-100 rounded-xl flex items-center justify-center">
               <FileText className="w-6 h-6 text-amber-600" />
@@ -57,7 +110,7 @@ export default function StackerPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-gray-500">故障设备</p>
-              <p className="text-2xl font-bold text-red-600 mt-1">{faultCount}</p>
+              <p className="text-2xl font-bold text-red-600 mt-1">{stats.fault}</p>
             </div>
             <div className="w-12 h-12 bg-red-100 rounded-xl flex items-center justify-center">
               <AlertTriangle className="w-6 h-6 text-red-600" />
@@ -107,16 +160,18 @@ export default function StackerPage() {
                           {Array.from({ length: 5 }, (_, aisle) => (
                             <div key={aisle} className="flex-1 flex gap-0.5">
                               {Array.from({ length: 20 }, (_, col) => {
-                                const rand = Math.random()
+                                const targetCode = `A${aisle + 1}-C${String(col + 1).padStart(2, '0')}-L${8 - layer}`
+                                const found = state.locations.find(l => l.code === targetCode)
                                 let color = '#374151'
-                                if (rand > 0.7) color = 'rgba(59, 130, 246, 0.8)'
-                                else if (rand > 0.4) color = 'rgba(59, 130, 246, 0.5)'
-                                else if (rand > 0.3) color = 'rgba(251, 191, 36, 0.5)'
+                                if (found?.status === 'occupied') color = 'rgba(59, 130, 246, 0.85)'
+                                else if (found?.status === 'reserved') color = 'rgba(245, 158, 11, 0.7)'
+                                else if (found?.status === 'maintenance') color = 'rgba(239, 68, 68, 0.7)'
                                 return (
                                   <div
                                     key={col}
                                     className="flex-1 h-5 rounded-sm"
                                     style={{ backgroundColor: color }}
+                                    title={targetCode}
                                   />
                                 )
                               })}
@@ -146,24 +201,28 @@ export default function StackerPage() {
                       </div>
                     </div>
                     <div className="flex gap-4">
-                      {Array.from({ length: 5 }, (_, i) => (
-                        <div key={i} className="text-center">
-                          <div className={`w-8 h-8 mx-auto rounded-lg flex items-center justify-center ${
-                            mockStackers[i]?.status === 'running' ? 'bg-green-500' :
-                            mockStackers[i]?.status === 'idle' ? 'bg-gray-500' : 'bg-red-500'
-                          }`}>
-                            <Bot className="w-5 h-5 text-white" />
+                      {Array.from({ length: 5 }, (_, i) => {
+                        const stacker = state.stackers[i]
+                        return (
+                          <div key={i} className="text-center">
+                            <div className={`w-8 h-8 mx-auto rounded-lg flex items-center justify-center ${
+                              stacker?.status === 'running' ? 'bg-green-500' :
+                              stacker?.status === 'idle' ? 'bg-gray-500' :
+                              stacker?.status === 'fault' ? 'bg-red-500' : 'bg-gray-500'
+                            }`}>
+                              <Bot className="w-5 h-5 text-white" />
+                            </div>
+                            <span className="text-xs text-gray-400 mt-1">{stacker?.code || `STK${String(i + 1).padStart(2, '0')}`}</span>
                           </div>
-                          <span className="text-xs text-gray-400 mt-1">STK{String(i + 1).padStart(2, '0')}</span>
-                        </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   </div>
                 </div>
 
                 <h4 className="font-semibold text-gray-800 mt-6 mb-4">堆垛机列表</h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {mockStackers.map((stacker) => (
+                  {state.stackers.map((stacker) => (
                     <div
                       key={stacker.id}
                       onClick={() => setSelectedStacker(stacker.id)}
@@ -226,9 +285,9 @@ export default function StackerPage() {
               </div>
 
               <div>
-                <h4 className="font-semibold text-gray-800 mb-4">执行中任务</h4>
+                <h4 className="font-semibold text-gray-800 mb-4">执行中任务（{executingTasks.length}）</h4>
                 <div className="space-y-3">
-                  {mockStackerTasks.filter(t => t.status === 'executing').slice(0, 5).map((task) => (
+                  {executingTasks.slice(0, 5).map((task) => (
                     <div key={task.id} className="p-4 bg-blue-50 border border-blue-100 rounded-xl">
                       <div className="flex items-center justify-between mb-2">
                         <span className="text-sm font-medium text-gray-800">{task.code}</span>
@@ -244,21 +303,30 @@ export default function StackerPage() {
                         <ArrowRightLeft className="w-3 h-3" />
                         <span>{task.toLocation || '站台'}</span>
                       </div>
-                      <div className="mt-3 pt-3 border-t border-blue-200">
-                        <div className="flex items-center justify-between text-xs">
+                      <div className="mt-3 pt-3 border-t border-blue-200 flex items-center justify-between">
+                        <div className="text-xs">
                           <span className="text-gray-500">执行设备</span>
-                          <span className="text-blue-600 font-medium">
-                            {mockStackers.find(s => s.id === task.stackerId)?.code}
+                          <span className="ml-1 text-blue-600 font-medium">
+                            {state.stackers.find(s => s.id === task.stackerId)?.code}
                           </span>
+                        </div>
+                        <div className="flex gap-1">
+                          <button onClick={() => handlePauseTask(task.id)} className="text-xs px-2 py-0.5 text-amber-600 bg-amber-50 rounded hover:bg-amber-100">暂停</button>
+                          <button onClick={() => handleCompleteTask(task.id)} className="text-xs px-2 py-0.5 text-green-600 bg-green-50 rounded hover:bg-green-100">完成</button>
                         </div>
                       </div>
                     </div>
                   ))}
+                  {executingTasks.length === 0 && (
+                    <div className="p-6 text-center text-gray-400 text-sm border border-gray-200 rounded-xl">
+                      暂无执行中任务
+                    </div>
+                  )}
                 </div>
 
                 <h4 className="font-semibold text-gray-800 mt-6 mb-4">设备运行监控</h4>
                 <div className="space-y-3">
-                  {mockStackers.slice(0, 3).map((stacker) => (
+                  {state.stackers.slice(0, 3).map((stacker) => (
                     <div key={stacker.id} className="p-3 border border-gray-200 rounded-xl">
                       <div className="flex items-center justify-between mb-2">
                         <span className="text-sm font-medium text-gray-800">{stacker.code}</span>
@@ -277,7 +345,7 @@ export default function StackerPage() {
                         </div>
                         <div className="text-center p-2 bg-gray-50 rounded">
                           <div className="text-gray-500">转速</div>
-                          <div className="font-medium text-gray-800 mt-0.5">{1200 + Math.floor(Math.random() * 300)}rpm</div>
+                          <div className="font-medium text-gray-800 mt-0.5">{stacker.status === 'running' ? 1200 + Math.floor(Math.random() * 300) : 0}rpm</div>
                         </div>
                       </div>
                     </div>
@@ -341,7 +409,7 @@ export default function StackerPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {mockStackerTasks.map((task) => (
+                    {state.stackerTasks.map((task) => (
                       <tr key={task.id} className="border-b border-gray-50 hover:bg-gray-50">
                         <td className="px-4 py-3 text-sm font-medium text-blue-600">{task.code}</td>
                         <td className="px-4 py-3">
@@ -350,7 +418,7 @@ export default function StackerPage() {
                           </span>
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-600">
-                          {mockStackers.find(s => s.id === task.stackerId)?.code}
+                          {state.stackers.find(s => s.id === task.stackerId)?.code}
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-600 font-mono">{task.fromLocation || '入库站台'}</td>
                         <td className="px-4 py-3 text-sm text-gray-600 font-mono">{task.toLocation || '出库站台'}</td>
@@ -365,12 +433,15 @@ export default function StackerPage() {
                           <div className="flex items-center gap-2">
                             {task.status === 'pending' && (
                               <>
-                                <button className="text-xs px-2 py-1 text-green-600 bg-green-50 rounded hover:bg-green-100">执行</button>
-                                <button className="text-xs px-2 py-1 text-red-600 bg-red-50 rounded hover:bg-red-100">取消</button>
+                                <button onClick={() => handleExecuteTask(task.id)} className="text-xs px-2 py-1 text-green-600 bg-green-50 rounded hover:bg-green-100">执行</button>
+                                <button onClick={() => handleCancelTask(task.id)} className="text-xs px-2 py-1 text-red-600 bg-red-50 rounded hover:bg-red-100">取消</button>
                               </>
                             )}
                             {task.status === 'executing' && (
-                              <button className="text-xs px-2 py-1 text-amber-600 bg-amber-50 rounded hover:bg-amber-100">暂停</button>
+                              <>
+                                <button onClick={() => handlePauseTask(task.id)} className="text-xs px-2 py-1 text-amber-600 bg-amber-50 rounded hover:bg-amber-100">暂停</button>
+                                <button onClick={() => handleCompleteTask(task.id)} className="text-xs px-2 py-1 text-green-600 bg-green-50 rounded hover:bg-green-100">完成</button>
+                              </>
                             )}
                             <button className="text-xs px-2 py-1 text-gray-600 hover:bg-gray-100 rounded">详情</button>
                           </div>
@@ -394,7 +465,7 @@ export default function StackerPage() {
                 <div className="p-5 border border-gray-200 rounded-xl">
                   <h4 className="font-semibold text-gray-800 mb-4">选择设备</h4>
                   <div className="grid grid-cols-5 gap-2">
-                    {mockStackers.map((stacker) => (
+                    {state.stackers.map((stacker) => (
                       <button
                         key={stacker.id}
                         onClick={() => setSelectedStacker(stacker.id)}
@@ -428,7 +499,7 @@ export default function StackerPage() {
                         <div>
                           <span className="text-gray-500">当前巷道</span>
                           <p className="font-medium text-gray-800 mt-1">
-                            {mockStackers.find(s => s.id === selectedStacker)?.code}
+                            {state.stackers.find(s => s.id === selectedStacker)?.code}
                           </p>
                         </div>
                         <div>

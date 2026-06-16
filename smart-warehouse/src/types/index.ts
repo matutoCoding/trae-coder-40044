@@ -19,7 +19,8 @@ export interface Pallet {
   inboundTime: string
   productionDate?: string
   expiryDate?: string
-  status: 'stored' | 'picking' | 'outbound' | 'empty'
+  locationCode?: string
+  status: 'stored' | 'picking' | 'outbound' | 'empty' | 'stacking'
 }
 
 export interface Location {
@@ -30,6 +31,7 @@ export interface Location {
   layer: number
   status: 'empty' | 'occupied' | 'reserved' | 'maintenance'
   palletId?: string
+  palletCode?: string
   category?: string
   capacity: number
   currentLoad: number
@@ -67,6 +69,7 @@ export interface InboundOrder {
   status: 'pending' | 'scanning' | 'allocating' | 'stacking' | 'completed'
   createTime: string
   operator: string
+  locationId?: string
   locationCode?: string
 }
 

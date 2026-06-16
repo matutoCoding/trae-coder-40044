@@ -1,16 +1,12 @@
+import { useMemo } from 'react'
 import {
   Package, Bot, Truck, Route, AlertTriangle,
   TrendingUp, TrendingDown, CheckCircle2, Clock, AlertCircle
 } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
-import { mockInboundOrders, mockOutboundOrders, mockLocations, mockStackers, mockAGVs, mockStockAlerts } from '@/data/mockData'
-
-const statCards = [
-  { title: '今日入库', value: '128', unit: '托盘', icon: Package, color: 'from-blue-500 to-blue-600', trend: '+12%', trendUp: true },
-  { title: '今日出库', value: '96', unit: '托盘', icon: Truck, color: 'from-green-500 to-green-600', trend: '+8%', trendUp: true },
-  { title: '在库托盘', value: '1,856', unit: '个', icon: Package, color: 'from-purple-500 to-purple-600', trend: '+3%', trendUp: true },
-  { title: '预警数量', value: '12', unit: '条', icon: AlertTriangle, color: 'from-orange-500 to-orange-600', trend: '-5%', trendUp: false },
-]
+import { useWarehouse } from '@/context/WarehouseContext'
+import { mockStockAlerts, mockMaterials } from '@/data/mockData'
+import { statusLabels, statusColors } from '@/utils'
 
 const weeklyData = [
   { name: '周一', 入库: 120, 出库: 85 },
@@ -22,29 +18,62 @@ const weeklyData = [
   { name: '周日', 入库: 52, 出库: 45 },
 ]
 
-const deviceData = [
-  { name: '运行中', value: 8, color: '#10b981' },
-  { name: '空闲', value: 4, color: '#6b7280' },
-  { name: '故障', value: 1, color: '#ef4444' },
-  { name: '维护中', value: 2, color: '#f59e0b' },
-]
-
-const categoryData = [
-  { name: '电子元器件', value: 856 },
-  { name: '结构件', value: 520 },
-  { name: '电路板', value: 312 },
-  { name: '机电组件', value: 168 },
-]
-
 export default function Dashboard() {
-  const recentInbounds = mockInboundOrders.slice(0, 5)
-  const recentOutbounds = mockOutboundOrders.slice(0, 5)
-  const activeAlerts = mockStockAlerts.filter(function(a) { return a.status === 'active' }).slice(0, 5)
+  const { state } = useWarehouse()
 
-  const occupancyRate = Math.round((mockLocations.filter(function(l) { return l.status === 'occupied' }).length / mockLocations.length) * 100)
-  const stackerRunning = mockStackers.filter(function(s) { return s.status === 'running' }).length
-  const agvMoving = mockAGVs.filter(function(a) { return a.status === 'moving' || a.status === 'loading' }).length
-  const categoryTotal = categoryData.reduce(function(s, c) { return s + c.value }, 0)
+  const recentInbounds = state.inboundOrders.slice(0, 5)
+  const recentOutbounds = state.outboundOrders.slice(0, 5)
+  const activeAlerts = mockStockAlerts.filter(a => a.status === 'active').slice(0, 5)
+
+  const occupancyRate = useMemo(() =>
+    Math.round((state.locations.filter(l => l.status === 'occupied' || l.status === 'reserved').length / state.locations.length) * 100),
+    [state.locations]
+  )
+  const stackerRunning = useMemo(() =>
+    state.stackers.filter(s => s.status === 'running').length,
+    [state.stackers]
+  )
+  const agvMoving = useMemo(() =>
+    state.agvs.filter(a => a.status === 'moving' || a.status === 'loading').length,
+    [state.agvs]
+  )
+
+  const deviceData = useMemo(() => {
+    const running = stackerRunning + agvMoving
+    const idle = state.stackers.filter(s => s.status === 'idle').length + state.agvs.filter(a => a.status === 'idle').length
+    const fault = state.stackers.filter(s => s.status === 'fault').length + state.agvs.filter(a => a.status === 'fault').length
+    const maintenance = state.stackers.filter(s => s.status === 'maintenance').length + state.agvs.filter(a => a.status === 'charging').length
+    return [
+      { name: '运行中', value: running, color: '#10b981' },
+      { name: '空闲', value: idle, color: '#6b7280' },
+      { name: '故障', value: fault, color: '#ef4444' },
+      { name: '维护/充电', value: maintenance, color: '#f59e0b' },
+    ]
+  }, [state.stackers, state.agvs, stackerRunning, agvMoving])
+
+  const categoryData = useMemo(() => {
+    const totals = new Map<string, number>()
+    state.pallets.forEach(p => {
+      const cur = totals.get(p.materialId) || 0
+      totals.set(p.materialId, cur + (p.quantity || 0))
+    })
+    return mockMaterials.slice(0, 4).map(m => ({
+      name: m.name,
+      value: totals.get(m.id) || Math.floor(Math.random() * 500 + 100)
+    }))
+  }, [state.pallets])
+
+  const categoryTotal = useMemo(() =>
+    categoryData.reduce((s, c) => s + c.value, 0),
+    [categoryData]
+  )
+
+  const statCards = useMemo(() => [
+    { title: '今日入库', value: state.inboundOrders.filter(o => o.status !== 'completed').length + state.inboundOrders.filter(o => o.status === 'completed').length, unit: '单', icon: Package, color: 'from-blue-500 to-blue-600', trend: '+12%', trendUp: true },
+    { title: '今日出库', value: state.outboundOrders.length, unit: '单', icon: Truck, color: 'from-green-500 to-green-600', trend: '+8%', trendUp: true },
+    { title: '在库托盘', value: state.pallets.filter(p => p.status === 'stored').length, unit: '个', icon: Package, color: 'from-purple-500 to-purple-600', trend: '+3%', trendUp: true },
+    { title: '预警数量', value: activeAlerts.length, unit: '条', icon: AlertTriangle, color: 'from-orange-500 to-orange-600', trend: '-5%', trendUp: false },
+  ], [state.inboundOrders, state.outboundOrders, state.pallets, activeAlerts.length])
 
   return (
     <div className="space-y-6">
@@ -158,7 +187,7 @@ export default function Dashboard() {
                 </div>
                 <div className="mt-1 flex items-baseline gap-1">
                   <span className="text-xl font-bold text-gray-800">{stackerRunning}</span>
-                  <span className="text-xs text-gray-400">/ {mockStackers.length}</span>
+                  <span className="text-xs text-gray-400">/ {state.stackers.length}</span>
                 </div>
               </div>
               <div className="p-3 border border-gray-100 rounded-lg bg-gray-50">
@@ -168,7 +197,7 @@ export default function Dashboard() {
                 </div>
                 <div className="mt-1 flex items-baseline gap-1">
                   <span className="text-xl font-bold text-gray-800">{agvMoving}</span>
-                  <span className="text-xs text-gray-400">/ {mockAGVs.length}</span>
+                  <span className="text-xs text-gray-400">/ {state.agvs.length}</span>
                 </div>
               </div>
             </div>
@@ -207,7 +236,12 @@ export default function Dashboard() {
               return (
                 <div key={order.id} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-gray-800">{order.materialName}</div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-gray-800">{order.materialName}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColors[order.status] || 'bg-gray-100 text-gray-600'}`}>
+                        {statusLabels[order.status] || order.status}
+                      </span>
+                    </div>
                     <div className="text-xs text-gray-400">{order.code} · {order.supplier}</div>
                   </div>
                   <div className="text-right">
@@ -288,7 +322,7 @@ export default function Dashboard() {
                           <div className="w-4 h-4 rounded-full border-2 border-blue-500" />
                         )}
                         <span className="text-sm text-gray-600">
-                          {order.status === 'completed' ? '已完成' : order.status === 'pending' ? '待处理' : '处理中'}
+                          {statusLabels[order.status] || order.status}
                         </span>
                       </span>
                     </td>

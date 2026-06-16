@@ -1,39 +1,112 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import {
   Truck, Search, Plus, CheckCircle2, Clock, AlertCircle,
   FileText, QrCode, ListTodo, ShieldCheck, ArrowRight, RefreshCw
 } from 'lucide-react'
-import { mockOutboundOrders, mockPickingWaves, mockPallets, mockMaterials } from '@/data/mockData'
+import { useWarehouse } from '@/context/WarehouseContext'
+import { mockMaterials } from '@/data/mockData'
 import { statusColors, statusLabels } from '@/utils'
+import type { Pallet, OutboundOrder } from '@/types'
 
 type TabType = 'orders' | 'waves' | 'picking' | 'review'
 
 export default function OutboundPage() {
+  const { state, dispatch } = useWarehouse()
   const [tab, setTab] = useState<TabType>('orders')
   const [selectedWave, setSelectedWave] = useState<string | null>(null)
   const [reviewCode, setReviewCode] = useState('')
   const [reviewResult, setReviewResult] = useState<any>(null)
+  const [fifoMaterialId, setFifoMaterialId] = useState<string>('all')
 
-  const pickingOrders = mockOutboundOrders.filter(o => o.status === 'picking').length
-  const reviewingOrders = mockOutboundOrders.filter(o => o.status === 'reviewing').length
-  const urgentOrders = mockOutboundOrders.filter(o => o.priority === 'urgent' && o.status !== 'completed').length
+  const pickingOrders = state.outboundOrders.filter(o => o.status === 'picking').length
+  const reviewingOrders = state.outboundOrders.filter(o => o.status === 'reviewing').length
+  const urgentOrders = state.outboundOrders.filter(o => o.priority === 'urgent' && o.status !== 'completed').length
 
   const handleReview = () => {
-    const order = mockOutboundOrders.find(o => o.code === reviewCode)
-    if (order) {
-      const pallet = mockPallets.find(p => p.code === (order.palletCodes?.[0] || 'PLT0001'))
-      const material = mockMaterials.find(m => m.id === order.materialId)
+    const trimmed = reviewCode.trim()
+    if (!trimmed) return
+
+    let matchedOrder: OutboundOrder | undefined
+    let matchedPallet: Pallet | undefined
+
+    matchedOrder = state.outboundOrders.find(o => o.code.toUpperCase() === trimmed.toUpperCase())
+    if (!matchedOrder) {
+      matchedPallet = state.pallets.find(p => p.code.toUpperCase() === trimmed.toUpperCase())
+      if (matchedPallet) {
+        matchedOrder = state.outboundOrders.find(o =>
+          o.status !== 'completed' &&
+          (o.palletCodes?.includes(matchedPallet!.code) || o.materialId === matchedPallet!.materialId)
+        )
+      }
+    } else {
+      const palletCode = matchedOrder.palletCodes?.[0]
+      matchedPallet = palletCode ? state.pallets.find(p => p.code === palletCode) : undefined
+    }
+
+    if (matchedOrder) {
+      if (!matchedPallet) {
+        matchedPallet = state.pallets.find(p => p.materialId === matchedOrder!.materialId && p.status === 'stored')
+      }
+      const material = mockMaterials.find(m => m.id === matchedOrder!.materialId)
+      const diff = Math.floor(Math.random() * 5) - 2
+      const actualQty = Math.max(0, matchedOrder.quantity + (Math.random() > 0.6 ? diff : 0))
       setReviewResult({
-        order,
-        pallet,
+        order: matchedOrder,
+        pallet: matchedPallet,
         material,
-        matched: Math.random() > 0.2,
-        actualQty: order.quantity + (Math.random() > 0.5 ? 0 : Math.floor(Math.random() * 5) - 2)
+        matched: actualQty === matchedOrder.quantity,
+        actualQty,
+        scannedByPallet: !!matchedPallet && !state.outboundOrders.find(o => o.code.toUpperCase() === trimmed.toUpperCase())
       })
     } else {
-      setReviewResult({ error: '未找到出库单' })
+      setReviewResult({ error: '未找到对应出库单或托盘' })
     }
   }
+
+  const handleConfirmOutbound = () => {
+    if (!reviewResult?.order) return
+    dispatch({
+      type: 'UPDATE_OUTBOUND_ORDER',
+      payload: { id: reviewResult.order.id, status: 'completed' }
+    })
+    if (reviewResult.pallet) {
+      dispatch({
+        type: 'UPDATE_PALLET',
+        payload: { id: reviewResult.pallet.id, status: 'outbound' }
+      })
+    }
+    setReviewResult({ ...reviewResult, confirmed: true })
+  }
+
+  const handleReleaseWave = (waveId: string) => {
+    dispatch({
+      type: 'BATCH_UPDATE_OUTBOUND_WAVE',
+      waveId,
+      waveStatus: 'processing',
+      orderStatus: 'picking'
+    })
+  }
+
+  const handleStartPicking = (orderId: string) => {
+    dispatch({ type: 'UPDATE_OUTBOUND_ORDER', payload: { id: orderId, status: 'picking' } })
+  }
+
+  const handleFinishPicking = (orderId: string) => {
+    dispatch({ type: 'UPDATE_OUTBOUND_ORDER', payload: { id: orderId, status: 'reviewing' } })
+  }
+
+  const fifoPallets = useMemo(() => {
+    return state.pallets
+      .filter(p => p.status === 'stored' && (fifoMaterialId === 'all' || p.materialId === fifoMaterialId))
+      .sort((a, b) => new Date(a.inboundTime).getTime() - new Date(b.inboundTime).getTime())
+      .slice(0, 8)
+  }, [state.pallets, fifoMaterialId])
+
+  const materialOptions = useMemo(() => {
+    const map = new Map<string, string>()
+    state.pallets.forEach(p => { if (p.status === 'stored') map.set(p.materialId, p.materialName) })
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name }))
+  }, [state.pallets])
 
   return (
     <div className="space-y-6">
@@ -42,7 +115,7 @@ export default function OutboundPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-gray-500">今日出库单</p>
-              <p className="text-2xl font-bold text-gray-800 mt-1">{mockOutboundOrders.length}</p>
+              <p className="text-2xl font-bold text-gray-800 mt-1">{state.outboundOrders.length}</p>
             </div>
             <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center">
               <FileText className="w-6 h-6 text-blue-600" />
@@ -163,7 +236,7 @@ export default function OutboundPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {mockOutboundOrders.map((order) => (
+                    {state.outboundOrders.map((order) => (
                       <tr key={order.id} className="border-b border-gray-50 hover:bg-gray-50">
                         <td className="px-4 py-3 text-sm font-medium text-blue-600">{order.code}</td>
                         <td className="px-4 py-3 text-sm text-gray-800">{order.materialName}</td>
@@ -190,7 +263,7 @@ export default function OutboundPage() {
                               <button className="text-xs px-2 py-1 text-purple-600 bg-purple-50 rounded hover:bg-purple-100">拣选进度</button>
                             )}
                             {order.status === 'reviewing' && (
-                              <button className="text-xs px-2 py-1 text-green-600 bg-green-50 rounded hover:bg-green-100">去复核</button>
+                              <button onClick={() => { setTab('review'); setReviewCode(order.code); }} className="text-xs px-2 py-1 text-green-600 bg-green-50 rounded hover:bg-green-100">去复核</button>
                             )}
                             <button className="text-xs px-2 py-1 text-gray-600 hover:bg-gray-100 rounded">详情</button>
                           </div>
@@ -220,7 +293,7 @@ export default function OutboundPage() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {mockPickingWaves.map((wave) => (
+                {state.pickingWaves.map((wave) => (
                   <div
                     key={wave.id}
                     onClick={() => setSelectedWave(wave.id)}
@@ -249,11 +322,20 @@ export default function OutboundPage() {
                         <p className="font-semibold text-gray-800 mt-1">{wave.operator}</p>
                       </div>
                     </div>
-                    {wave.status !== 'completed' && (
-                      <button className="mt-4 w-full py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 flex items-center justify-center gap-1">
+                    {wave.status === 'pending' && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleReleaseWave(wave.id); }}
+                        className="mt-4 w-full py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 flex items-center justify-center gap-1"
+                      >
                         <ArrowRight className="w-4 h-4" />
                         下达波次
                       </button>
+                    )}
+                    {wave.status === 'processing' && (
+                      <div className="mt-4 w-full py-2 text-sm font-medium text-purple-600 bg-purple-50 rounded-lg text-center flex items-center justify-center gap-1">
+                        <Clock className="w-4 h-4" />
+                        处理中...
+                      </div>
                     )}
                   </div>
                 ))}
@@ -287,7 +369,10 @@ export default function OutboundPage() {
               <div className="lg:col-span-2">
                 <h4 className="font-semibold text-gray-800 mb-4">拣选任务列表</h4>
                 <div className="space-y-3">
-                  {mockOutboundOrders.filter(o => o.status === 'picking' || o.status === 'pending').slice(0, 8).map((order, idx) => (
+                  {state.outboundOrders
+                    .filter(o => o.status === 'picking' || o.status === 'pending')
+                    .slice(0, 8)
+                    .map((order, idx) => (
                     <div key={order.id} className="p-4 border border-gray-200 rounded-xl hover:shadow-card transition-shadow">
                       <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-3">
@@ -336,10 +421,10 @@ export default function OutboundPage() {
                         <div className="flex gap-2">
                           <button className="text-xs px-3 py-1 text-blue-600 bg-blue-50 rounded hover:bg-blue-100">查看详情</button>
                           {order.status === 'pending' && (
-                            <button className="text-xs px-3 py-1 text-white bg-blue-600 rounded hover:bg-blue-700">开始拣选</button>
+                            <button onClick={() => handleStartPicking(order.id)} className="text-xs px-3 py-1 text-white bg-blue-600 rounded hover:bg-blue-700">开始拣选</button>
                           )}
                           {order.status === 'picking' && (
-                            <button className="text-xs px-3 py-1 text-white bg-green-600 rounded hover:bg-green-700">完成拣选</button>
+                            <button onClick={() => handleFinishPicking(order.id)} className="text-xs px-3 py-1 text-white bg-green-600 rounded hover:bg-green-700">完成拣选</button>
                           )}
                         </div>
                       </div>
@@ -358,9 +443,23 @@ export default function OutboundPage() {
                   <p className="text-xs text-green-700">系统自动按照入库时间排序，优先出库最早入库的物料</p>
                 </div>
 
-                <h5 className="font-medium text-gray-700 mb-3">待出库队列（按入库时间排序）</h5>
+                <div className="mb-3">
+                  <label className="block text-xs font-medium text-gray-600 mb-1">按物料筛选</label>
+                  <select
+                    value={fifoMaterialId}
+                    onChange={(e) => setFifoMaterialId(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="all">全部物料</option>
+                    {materialOptions.map(m => (
+                      <option key={m.id} value={m.id}>{m.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <h5 className="font-medium text-gray-700 mb-3">待出库队列（按入库时间排序，最早在前）</h5>
                 <div className="space-y-2">
-                  {mockPallets.filter(p => p.status === 'stored').slice(0, 6).map((pallet, idx) => (
+                  {fifoPallets.map((pallet, idx) => (
                     <div key={pallet.id} className="p-3 border border-gray-200 rounded-lg hover:bg-gray-50">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
@@ -381,6 +480,9 @@ export default function OutboundPage() {
                       </div>
                     </div>
                   ))}
+                  {fifoPallets.length === 0 && (
+                    <div className="p-6 text-center text-gray-400 text-sm">暂无在库托盘</div>
+                  )}
                 </div>
               </div>
             </div>
@@ -398,7 +500,7 @@ export default function OutboundPage() {
 
               <div className="space-y-4">
                 <div className="p-5 border border-gray-200 rounded-xl">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">扫码复核</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">扫码复核（支持出库单号 / 托盘号）</label>
                   <div className="flex gap-3">
                     <input
                       type="text"
@@ -418,7 +520,7 @@ export default function OutboundPage() {
                   </div>
                 </div>
 
-                {reviewResult && (
+                {reviewResult && !reviewResult.confirmed && (
                   <div className={`p-5 rounded-xl border ${
                     reviewResult.error
                       ? 'bg-red-50 border-red-200'
@@ -445,7 +547,10 @@ export default function OutboundPage() {
                               <h4 className="font-semibold text-gray-800">
                                 {reviewResult.matched ? '复核通过' : '存在差异'}
                               </h4>
-                              <p className="text-sm text-gray-500">出库单 {reviewResult.order.code}</p>
+                              <p className="text-sm text-gray-500">
+                                出库单 {reviewResult.order.code}
+                                {reviewResult.scannedByPallet && <span className="ml-2 text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded">通过托盘匹配</span>}
+                              </p>
                             </div>
                           </div>
                           <span className={`text-xs px-3 py-1 rounded-full ${
@@ -496,23 +601,40 @@ export default function OutboundPage() {
                         </div>
 
                         <div className="mt-4 flex gap-3">
-                          {reviewResult.matched ? (
-                            <button className="flex-1 py-2.5 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700">
-                              确认出库
+                          <button
+                            onClick={handleConfirmOutbound}
+                            className="flex-1 py-2.5 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700"
+                          >
+                            {reviewResult.matched ? '确认出库' : '按实际数量出库'}
+                          </button>
+                          {!reviewResult.matched && (
+                            <button className="flex-1 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
+                              驳回重新拣选
                             </button>
-                          ) : (
-                            <>
-                              <button className="flex-1 py-2.5 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700">
-                                按实际数量出库
-                              </button>
-                              <button className="flex-1 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
-                                驳回重新拣选
-                              </button>
-                            </>
                           )}
                         </div>
                       </div>
                     )}
+                  </div>
+                )}
+
+                {reviewResult?.confirmed && (
+                  <div className="p-5 rounded-xl border bg-green-50 border-green-200">
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
+                        <CheckCircle2 className="w-6 h-6 text-green-600" />
+                      </div>
+                      <div>
+                        <h4 className="font-semibold text-gray-800">出库完成</h4>
+                        <p className="text-sm text-gray-500">订单 {reviewResult.order.code} 状态已更新为：已完成</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => { setReviewResult(null); setReviewCode(''); }}
+                      className="mt-2 w-full py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                    >
+                      继续复核下一单
+                    </button>
                   </div>
                 )}
 
